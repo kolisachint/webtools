@@ -1,5 +1,7 @@
 # webtools
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A unified, **token-efficient** web `fetch` + `search` CLI for LLM agents,
 built around **reference-style URL preservation**. One small, blazing-fast
 binary; no API keys, no backend.
