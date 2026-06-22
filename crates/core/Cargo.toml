@@ -1,6 +1,6 @@
 [package]
 name = "webfetch-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Shared primitives: compression, token budgeting, and reference-style URLs"
 

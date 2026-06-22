@@ -23,7 +23,7 @@ websearch = { path = "crates/websearch" }
 # The workspace root is also the unified CLI binary.
 [package]
 name = "webtools"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Unified, token-efficient web fetch + search CLI for LLM agents"
 
