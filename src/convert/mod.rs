@@ -7,6 +7,16 @@ pub mod text;
 use crate::compress::{compress_block, compress_text};
 use crate::types::{ContentType, UrlReference};
 
+/// Elements whose contents never belong in extracted output (scripts,
+/// styling, embedded documents). Shared by every walker so the formats
+/// agree on what to drop.
+pub(crate) fn is_skippable(name: &str) -> bool {
+    matches!(
+        name,
+        "script" | "style" | "noscript" | "svg" | "head" | "template" | "iframe"
+    )
+}
+
 /// A converted document: the rendered `content` plus any preserved references.
 pub struct Converted {
     pub content: String,

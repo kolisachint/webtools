@@ -9,6 +9,7 @@ pub mod compress;
 pub mod convert;
 pub mod extract;
 pub mod fetch;
+pub mod refs;
 pub mod search;
 pub mod types;
 

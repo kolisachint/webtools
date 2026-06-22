@@ -72,15 +72,9 @@ pub fn format_results(results: &[SearchResult]) -> String {
 }
 
 /// Render the reference block appended to text output.
+/// Thin wrapper over [`crate::refs::render_block`].
 pub fn render_references(refs: &[Reference]) -> String {
-    if refs.is_empty() {
-        return String::new();
-    }
-    let mut s = String::from("References:\n");
-    for r in refs {
-        s.push_str(&format!("[{}] {}\n", r.index, r.url));
-    }
-    s.trim_end().to_string()
+    crate::refs::render_block(refs)
 }
 
 /// Parse an already-fetched results page into a [`SearchOutput`] (no network).

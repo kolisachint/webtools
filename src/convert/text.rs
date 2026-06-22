@@ -91,19 +91,12 @@ fn is_block(name: &str) -> bool {
     )
 }
 
-fn is_skippable(name: &str) -> bool {
-    matches!(
-        name,
-        "script" | "style" | "noscript" | "svg" | "head" | "template" | "iframe"
-    )
-}
-
 fn walk(node: NodeRef<Node>, out: &mut String, refs: &mut RefCollector) {
     match node.value() {
         Node::Text(t) => out.push_str(&t[..]),
         Node::Element(el) => {
             let name = el.name();
-            if is_skippable(name) {
+            if super::is_skippable(name) {
                 return;
             }
 
@@ -164,20 +157,8 @@ pub fn html_to_text_with_refs(html: &str, base_url: &str) -> (String, Vec<UrlRef
     (out, refs.references)
 }
 
-/// Render a reference list into the canonical block appended to text output:
-///
-/// ```text
-/// References:
-/// [1] https://example.com/a
-/// [2] https://example.com/b
-/// ```
+/// Render a reference list into the canonical block appended to text output.
+/// Thin wrapper over [`crate::refs::render_block`].
 pub fn render_references(references: &[UrlReference]) -> String {
-    if references.is_empty() {
-        return String::new();
-    }
-    let mut s = String::from("References:\n");
-    for r in references {
-        s.push_str(&format!("[{}] {}\n", r.index, r.url));
-    }
-    s.trim_end().to_string()
+    crate::refs::render_block(references)
 }

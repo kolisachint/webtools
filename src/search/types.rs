@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The slim reference entry shared with the fetch path.
+pub use crate::refs::Reference;
+
 /// A single search hit, carrying its reference index so the inline body can
 /// cite `[N]` while the full URL lives in the reference block.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -10,13 +13,6 @@ pub struct SearchResult {
     pub snippet: String,
     pub url: String,
     pub ref_index: usize,
-}
-
-/// A slim reference entry (index → URL) for the output's reference block.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Reference {
-    pub index: usize,
-    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

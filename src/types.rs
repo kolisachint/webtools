@@ -21,6 +21,15 @@ pub struct UrlReference {
     pub text: String,
 }
 
+impl crate::refs::Referable for UrlReference {
+    fn index(&self) -> usize {
+        self.index
+    }
+    fn url(&self) -> &str {
+        &self.url
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentType {

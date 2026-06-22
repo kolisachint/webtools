@@ -111,8 +111,9 @@ src/
 ├── lib.rs         Public API (convert_html, fetch_and_convert)
 ├── fetch.rs       HTTP fetch + redirect policy (reqwest)
 ├── extract.rs     Content-root + title heuristics
+├── refs.rs        Shared Referable trait + canonical reference-block renderer
 ├── convert/
-│   ├── mod.rs     Format dispatcher
+│   ├── mod.rs     Format dispatcher (+ shared is_skippable)
 │   ├── text.rs    Reference-style URL collection
 │   ├── markdown.rs Inline-link markdown
 │   └── structured.rs JSON blocks

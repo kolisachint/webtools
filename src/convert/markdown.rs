@@ -24,10 +24,7 @@ fn walk(node: NodeRef<Node>, out: &mut String, base: &Option<Url>) {
         Node::Text(t) => out.push_str(&t[..]),
         Node::Element(el) => {
             let name = el.name();
-            if matches!(
-                name,
-                "script" | "style" | "noscript" | "svg" | "head" | "template"
-            ) {
+            if super::is_skippable(name) {
                 return;
             }
 
