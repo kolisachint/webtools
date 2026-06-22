@@ -13,6 +13,7 @@ pub use webfetch_core::{compress, refs};
 pub mod convert;
 pub mod extract;
 pub mod fetch;
+pub mod guard;
 pub mod media;
 pub mod types;
 
