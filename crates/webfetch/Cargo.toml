@@ -3,6 +3,12 @@ name = "webfetch"
 version = "0.1.0"
 edition = "2021"
 description = "Token-efficient web content fetcher with reference-style URL preservation"
+license = "MIT"
+repository = "https://github.com/kolisachint/webtools"
+homepage = "https://github.com/kolisachint/webtools"
+readme = "../README.md"
+keywords = ["token", "llm", "agent", "fetch", "url"]
+categories = ["web-programming", "text-processing"]
 
 [dependencies]
 webfetch-core = { workspace = true }

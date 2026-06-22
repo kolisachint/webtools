@@ -3,6 +3,12 @@ name = "websearch"
 version = "0.1.0"
 edition = "2021"
 description = "Zero-infrastructure web search (DuckDuckGo Lite) with reference-style URLs"
+license = "MIT"
+repository = "https://github.com/kolisachint/webtools"
+homepage = "https://github.com/kolisachint/webtools"
+readme = "../README.md"
+keywords = ["search", "llm", "agent", "duckduckgo", "url"]
+categories = ["web-programming", "text-processing"]
 
 [dependencies]
 webfetch-core = { workspace = true }
