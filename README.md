@@ -33,6 +33,35 @@ References:
 Repeated links collapse to a single reference — the same URL always reuses
 its first index.
 
+## Web search
+
+The same reference-style preservation powers a zero-infrastructure search
+layer (`websearch` binary / `webfetch::search` module) that scrapes
+DuckDuckGo Lite — no API key, no backend.
+
+```bash
+websearch --query "react 19 release notes"
+websearch --query "rust async" --max-results 8 --json
+```
+
+Output keeps titles + snippets inline with `[N]` markers and collects the
+URLs into a reference block:
+
+```
+React 19 – React [1]
+React 19 introduces the new use hook for data fetching and more APIs.
+
+Partial Prerendering – Next.js [2]
+The Next.js App Router now supports partial prerendering.
+
+References:
+[1] https://react.dev/blog/2024/12/01/react-19
+[2] https://nextjs.org/blog/partial-prerendering
+```
+
+DDG Lite's `//duckduckgo.com/l/?uddg=…` redirect wrappers are decoded back to
+the real destination URLs.
+
 ## Output formats
 
 - **text** (default) — reference-style plain text. Most token-efficient.
@@ -76,7 +105,9 @@ for r in &result.references {
 
 ```
 src/
-├── main.rs        CLI entry
+├── main.rs        webfetch CLI entry
+├── bin/
+│   └── websearch.rs  websearch CLI entry
 ├── lib.rs         Public API (convert_html, fetch_and_convert)
 ├── fetch.rs       HTTP fetch + redirect policy (reqwest)
 ├── extract.rs     Content-root + title heuristics
@@ -85,6 +116,10 @@ src/
 │   ├── text.rs    Reference-style URL collection
 │   ├── markdown.rs Inline-link markdown
 │   └── structured.rs JSON blocks
+├── search/
+│   ├── mod.rs     DDG Lite fetch + reference-style output
+│   ├── extract.rs DOM → SearchResult parser (uddg decoding)
+│   └── types.rs   Search output structs
 ├── compress.rs    Whitespace/decorative reduction + token budgeting
 └── types.rs       Output structs
 ```

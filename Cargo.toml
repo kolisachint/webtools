@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "webfetch"
 path = "src/main.rs"
 
+[[bin]]
+name = "websearch"
+path = "src/bin/websearch.rs"
+
 [dependencies]
 tokio = { version = "1.40", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli"] }
@@ -24,3 +28,4 @@ url = "2.5"
 regex = "1.10"
 once_cell = "1.19"
 anyhow = "1.0"
+urlencoding = "2.1"

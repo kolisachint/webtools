@@ -9,6 +9,7 @@ pub mod compress;
 pub mod convert;
 pub mod extract;
 pub mod fetch;
+pub mod search;
 pub mod types;
 
 pub use fetch::fetch_html;
