@@ -92,7 +92,9 @@ jobs:
           VERSION="${{ steps.bump.outputs.version }}"
           git add Cargo.toml Cargo.lock crates/*/Cargo.toml
           git commit -m "release: v${VERSION}"
-          git tag "v${VERSION}"
+          # Annotated tag so `git push --follow-tags` actually pushes it
+          # (lightweight tags are skipped by --follow-tags).
+          git tag -a "v${VERSION}" -m "release: v${VERSION}"
 
       - name: Push version bump and tag
         run: git push --follow-tags origin main
