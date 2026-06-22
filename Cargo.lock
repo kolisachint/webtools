@@ -2157,18 +2157,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "webfetch-tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "serde_json",
- "tokio",
- "webfetch",
- "websearch",
-]
-
-[[package]]
 name = "webpki-roots"
 version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2190,6 +2178,18 @@ dependencies = [
  "url",
  "urlencoding",
  "webfetch-core",
+]
+
+[[package]]
+name = "webtools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "tokio",
+ "webfetch",
+ "websearch",
 ]
 
 [[package]]

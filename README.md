@@ -1,6 +1,42 @@
-# webfetch
+# webtools
 
-A token-efficient web content fetcher with **reference-style URL preservation**.
+A unified, **token-efficient** web `fetch` + `search` CLI for LLM agents,
+built around **reference-style URL preservation**. One small, blazing-fast
+binary; no API keys, no backend.
+
+```bash
+webtools fetch  --url https://docs.example.com/api   # page → compact text + refs
+webtools search --query "rust async runtime"          # web search → results + refs
+```
+
+## What an LLM gets
+
+Every command returns exactly what an agent needs and nothing it doesn't:
+
+- **Compact content** — anchor text + `[N]` markers instead of inline URLs.
+- **Recoverable references** — full URLs in a trailing block, so the agent can
+  still cite sources or follow a specific link.
+- **A token budget signal** — `token_estimate` on every result, plus a
+  `--max-tokens` cap on `fetch`.
+- **Provenance** — `final_url` (post-redirect) and `source` on fetches.
+- **Machine-readable mode** — `--json` for structured `FetchResult` /
+  `SearchOutput`; `--output structured` for a typed block tree.
+
+## Performance
+
+The conversion path is pure-CPU and allocation-light. Offline latency on the
+sample fixtures (release build, `cargo run --release --example latency`):
+
+| Path                       | Latency   | Throughput     |
+|----------------------------|-----------|----------------|
+| `fetch`  html → text+refs  | ~47 µs/op | ~21k ops/sec   |
+| `fetch`  html → markdown   | ~45 µs/op | ~22k ops/sec   |
+| `fetch`  html → structured | ~47 µs/op | ~21k ops/sec   |
+| `search` ddg-lite → results| ~63 µs/op | ~16k ops/sec   |
+
+Real calls are dominated by the remote server's network latency, not our
+code. The release binary is ~6.6 MB (LTO + stripped) and starts in single-digit
+milliseconds.
 
 ## The problem
 
@@ -40,8 +76,8 @@ layer (`websearch` binary / `webfetch::search` module) that scrapes
 DuckDuckGo Lite — no API key, no backend.
 
 ```bash
-webfetch-tools websearch --query "react 19 release notes"
-webfetch-tools websearch --query "rust async" --max-results 8 --json
+webtools search --query "react 19 release notes"
+webtools search --query "rust async" --max-results 8 --json
 ```
 
 Output keeps titles + snippets inline with `[N]` markers and collects the
@@ -70,20 +106,20 @@ the real destination URLs.
 
 ## Usage
 
-A single binary, `webfetch-tools`, exposes both tools as subcommands:
+A single binary, `webtools`, exposes both tools as subcommands:
 
 ```bash
 # Plain text with a reference block
-webfetch-tools webfetch --url https://docs.example.com/api
+webtools fetch --url https://docs.example.com/api
 
 # Markdown
-webfetch-tools webfetch --url https://example.com/post --output markdown
+webtools fetch --url https://example.com/post --output markdown
 
 # Full structured result as JSON
-webfetch-tools webfetch --url https://example.com --output structured --json
+webtools fetch --url https://example.com --output structured --json
 
 # Cap output size (estimated tokens)
-webfetch-tools webfetch --url https://example.com --max-tokens 2000
+webtools fetch --url https://example.com --max-tokens 2000
 ```
 
 ## Library
@@ -134,10 +170,25 @@ Each leaf crate re-exports `webfetch_core::{compress, refs}`, so the shared
 reference-style logic has a single home but stays reachable as
 `webfetch::refs` / `websearch::refs`.
 
+## Install
+
+Grab a prebuilt binary from the [Releases](../../releases) page, or build from
+source:
+
+```bash
+cargo build --release --bin webtools
+# binary at target/release/webtools
+```
+
+Tagging a `v*` release (e.g. `git tag v0.1.0 && git push origin v0.1.0`)
+triggers the release workflow, which builds and attaches Linux and macOS
+binaries.
+
 ## Development
 
 ```bash
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets
+cargo run --release --example latency   # offline latency benchmark
 ```

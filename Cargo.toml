@@ -22,13 +22,13 @@ websearch = { path = "crates/websearch" }
 
 # The workspace root is also the unified CLI binary.
 [package]
-name = "webfetch-tools"
+name = "webtools"
 version = "0.1.0"
 edition = "2021"
-description = "Unified CLI for the webfetch/websearch tools"
+description = "Unified, token-efficient web fetch + search CLI for LLM agents"
 
 [[bin]]
-name = "webfetch-tools"
+name = "webtools"
 path = "src/main.rs"
 
 [dependencies]
@@ -38,3 +38,11 @@ tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+
+# Optimized for a small, blazing-fast shipped binary.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

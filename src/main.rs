@@ -8,7 +8,7 @@ use webfetch::types::{ContentType, FetchOptions};
 use websearch::types::SearchOptions;
 
 #[derive(Parser)]
-#[command(name = "webfetch-tools", version, about)]
+#[command(name = "webtools", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -17,7 +17,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Fetch a URL and convert it to token-efficient, reference-style output.
-    Webfetch {
+    Fetch {
         #[arg(long)]
         url: String,
         /// Output format: text | markdown | structured.
@@ -34,7 +34,7 @@ enum Commands {
         timeout: u64,
     },
     /// Search the web (DuckDuckGo Lite) with reference-style result URLs.
-    Websearch {
+    Search {
         #[arg(long)]
         query: String,
         /// Maximum number of results to return.
@@ -53,9 +53,17 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        // Concise, single-line error chain for a CLI — no backtrace dump.
+        eprintln!("webtools: {err:#}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     match Cli::parse().command {
-        Commands::Webfetch {
+        Commands::Fetch {
             url,
             output,
             json,
@@ -75,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", result.content);
             }
         }
-        Commands::Websearch {
+        Commands::Search {
             query,
             max_results,
             json,
