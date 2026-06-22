@@ -7,8 +7,7 @@ commit touching `.github/workflows/`.
 
 ## Current status
 
-⚠️ **Workflows are not yet active.** They must be moved into `.github/workflows/`
-with a workflow-scoped token or via the GitHub web UI.
+✅ **Workflows are now active** in `.github/workflows/`.
 
 ## To activate
 
