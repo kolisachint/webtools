@@ -171,7 +171,7 @@ jobs:
           target: ${{ matrix.target }}
           archive: webtools-$target
           checksum: sha256
-          tag: ${{ needs.bump-and-tag.outputs.tag }}
+          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ── 5. Aggregate SHA256SUMS ───────────────────────────────────────────
