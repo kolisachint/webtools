@@ -24,7 +24,7 @@ Code:
   `extract.rs`, `types.rs`
 - `examples/latency.rs` — offline latency benchmark
 - `tests/mcp.rs` — MCP stdio integration test
-- `.github/workflows/` — `ci.yml`, `merge-release.yml`, `release.yml`
+- `.github/workflows/` — `ci.yml`, `release.yml`
 - `.agents/commands/` — slash-command definitions (`pr.md`)
 
 **Dependency / build order**: `webfetch-core` → `webfetch`, `websearch` →
@@ -66,7 +66,7 @@ Code:
 ## Slash Commands
 
 - `/pr [patch|minor|major]` — opens a release PR on a feature branch and labels
-  it `cargo:<bump>` so `merge-release.yml` bumps the version and tags on merge.
+  it `cargo:<bump>` so `release.yml` bumps the version, publishes, and builds on merge.
   Defined in `.agents/commands/pr.md`. Defaults to `patch`.
 - Slash-command definitions live in `.agents/commands/`.
 
@@ -85,7 +85,7 @@ root `Cargo.toml`, all `crates/*/Cargo.toml`, and the internal
 ### Flow (do NOT bump versions or tag by hand)
 
 1. `/pr <bump>` opens a PR labeled `cargo:<bump>`.
-2. On merge, `merge-release.yml` bumps every version, updates `Cargo.lock`,
+2. On merge, `release.yml` bumps every version, updates `Cargo.lock`,
    commits `release: v<version>`, tags `v<version>`, and pushes `main`.
 3. The tag triggers `release.yml`, which publishes the libraries to crates.io
    (in dependency order, skipping versions already on the index) and then

@@ -2,7 +2,7 @@
 name: pr
 description: |
   Open a release PR: create a branch, stage only your changes, rebase on
-  origin/main, push, and open a PR labeled cargo:<bump> so the merge-release
+  origin/main, push, and open a PR labeled cargo:<bump> so the release
   workflow publishes on merge.
   Usage: /pr <patch|minor|major>
 argument-hint: patch|minor|major
@@ -11,7 +11,7 @@ Open a release PR with bump type: **$1** (default to `patch` if empty or invalid
 
 Goal: get only the changes YOU made in this session onto a feature branch,
 rebased on top of `origin/main`, then open a PR labeled `cargo:$1`. When that PR
-is merged, `.github/workflows/merge-release.yml` bumps the Cargo.toml version,
+is merged, `.github/workflows/release.yml` bumps the Cargo.toml version,
 tags, and publishes the release binaries.
 
 Follow these steps exactly. Stop and report if any step fails.

@@ -1,8 +1,7 @@
 # CI / Release workflows
 
-✅ The GitHub Actions workflows are active in `.github/workflows/`
-(`ci.yml`, `merge-release.yml`, `release.yml`). This file documents what each
-one does. There is no manual activation step.
+The GitHub Actions workflows live in `.github/workflows/` (`ci.yml` and
+`release.yml`). There is no manual activation step.
 
 ## Workflow details
 
@@ -15,51 +14,40 @@ Runs on pushes to `main` and on PRs:
 
 ### `release.yml`
 
-Runs on `v*` tags (e.g. `v0.1.0`):
-- Publishes the libraries to crates.io in dependency order
-  (`webtools-core` → `webtools-fetch` → `webtools-search`), skipping any version
-  already on the index so a partial run can be retried (needs the
-  `CRATES_IO_TOKEN` secret)
-- Creates the GitHub release with auto-generated notes
-- Builds `webtools` for seven targets (Linux gnu/musl x86_64 + aarch64, macOS
-  x86_64 + aarch64, Windows x86_64) and attaches each archive plus a per-asset
-  `.sha256`
-- Aggregates a combined `SHA256SUMS` manifest for downloaders
+A single workflow triggered when a PR with a `cargo:patch`, `cargo:minor`, or
+`cargo:major` label is merged. Runs five jobs:
+
+1. **bump-and-tag** — reads the current version, bumps it based on the label,
+   commits to `main`, pushes, and creates an annotated `v*` tag
+2. **publish** — publishes crates to crates.io in dependency order
+   (`webtools-core` → `webtools-fetch` → `webtools-search`), skipping any
+   version already on the index so a partial run can be retried (needs the
+   `CRATES_IO_TOKEN` secret)
+3. **create-release** — creates the GitHub release with auto-generated notes
+   (runs in parallel with publish)
+4. **build** — builds `webtools` for seven targets (Linux gnu/musl x86_64 +
+   aarch64, macOS x86_64 + aarch64, Windows x86_64) and attaches each archive
+   plus a per-asset `.sha256`
+5. **checksums** — aggregates a combined `SHA256SUMS` manifest for downloaders
 
 See [`../docs/install.md`](../docs/install.md) for the asset naming table and
 checksum-verification steps.
-
-### `merge-release.yml`
-
-Runs when a PR with a `cargo:patch`, `cargo:minor`, or `cargo:major` label is merged:
-- Reads the current version from `Cargo.toml`
-- Bumps the version based on the label
-- Updates `Cargo.lock`
-- Commits the version change
-- Creates a `v*` git tag
-- Pushes to `main`
-
-This triggers `release.yml` which builds and publishes binaries.
 
 ## PR-based release flow
 
 The recommended release process uses the `/pr` command (see `.agents/commands/pr.md`):
 
 1. **Agent runs `/pr patch`** (or `minor`/`major`) → Creates PR with `cargo:<bump>` label
-2. **PR gets merged** → Triggers `merge-release.yml`
-3. **Merge workflow** → Bumps version, tags, pushes
-4. **Tag push** → Triggers `release.yml` → Publishes crates, builds
-   cross-platform binaries, and uploads checksums
+2. **PR gets merged** → Triggers `release.yml`
+3. **Release workflow** → Bumps version, tags, publishes crates, builds
+   cross-platform binaries, and uploads checksums — all in one workflow
 
 This ensures version bumps are reviewable and tied to specific changes.
 
-## Cutting a release (manual)
+## Why a single workflow?
 
-If you need to release without a PR:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-This triggers the release workflow directly.
+Previously, version bumping and releasing were split across two workflows
+(`merge-release.yml` → tag push → `release.yml`). Tags pushed by the
+`GITHUB_TOKEN` do not trigger other workflows (a GitHub Actions safety
+measure), so every release required a manual tag re-push. Combining both
+into a single workflow eliminates this entirely.
