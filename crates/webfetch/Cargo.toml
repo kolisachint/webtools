@@ -1,0 +1,16 @@
+[package]
+name = "webfetch"
+version = "0.1.0"
+edition = "2021"
+description = "Token-efficient web content fetcher with reference-style URL preservation"
+
+[dependencies]
+webfetch-core = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+scraper = { workspace = true }
+ego-tree = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+anyhow = { workspace = true }

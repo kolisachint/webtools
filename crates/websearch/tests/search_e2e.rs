@@ -1,5 +1,5 @@
-use webfetch::search::extract::{parse_ddg_lite, resolve_result_url};
-use webfetch::search::{build_output, build_refs, format_results, render_references};
+use websearch::extract::{parse_ddg_lite, resolve_result_url};
+use websearch::{build_output, build_refs, format_results, render_references};
 
 const DDG: &str = include_str!("fixtures/ddg_lite.html");
 

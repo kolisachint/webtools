@@ -1,0 +1,16 @@
+[package]
+name = "websearch"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-infrastructure web search (DuckDuckGo Lite) with reference-style URLs"
+
+[dependencies]
+webfetch-core = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+scraper = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+anyhow = { workspace = true }
+urlencoding = { workspace = true }

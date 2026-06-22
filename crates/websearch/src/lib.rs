@@ -5,6 +5,10 @@
 //! marker and the full URLs are collected into a reference block, keeping the
 //! context window tight while staying citable.
 
+// Shared primitives from webfetch-core; re-exported so internal modules can
+// keep using `crate::compress` / `crate::refs`.
+pub use webfetch_core::{compress, refs};
+
 pub mod extract;
 pub mod types;
 

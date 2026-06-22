@@ -40,8 +40,8 @@ layer (`websearch` binary / `webfetch::search` module) that scrapes
 DuckDuckGo Lite — no API key, no backend.
 
 ```bash
-websearch --query "react 19 release notes"
-websearch --query "rust async" --max-results 8 --json
+webfetch-tools websearch --query "react 19 release notes"
+webfetch-tools websearch --query "rust async" --max-results 8 --json
 ```
 
 Output keeps titles + snippets inline with `[N]` markers and collects the
@@ -70,18 +70,20 @@ the real destination URLs.
 
 ## Usage
 
+A single binary, `webfetch-tools`, exposes both tools as subcommands:
+
 ```bash
 # Plain text with a reference block
-webfetch --url https://docs.example.com/api
+webfetch-tools webfetch --url https://docs.example.com/api
 
 # Markdown
-webfetch --url https://example.com/post --output markdown
+webfetch-tools webfetch --url https://example.com/post --output markdown
 
 # Full structured result as JSON
-webfetch --url https://example.com --output structured --json
+webfetch-tools webfetch --url https://example.com --output structured --json
 
 # Cap output size (estimated tokens)
-webfetch --url https://example.com --max-tokens 2000
+webfetch-tools webfetch --url https://example.com --max-tokens 2000
 ```
 
 ## Library
@@ -103,32 +105,39 @@ for r in &result.references {
 
 ## Architecture
 
+A Cargo workspace: shared primitives in a core crate, one library crate per
+tool, and a thin root binary that wires them into subcommands.
+
 ```
-src/
-├── main.rs        webfetch CLI entry
-├── bin/
-│   └── websearch.rs  websearch CLI entry
-├── lib.rs         Public API (convert_html, fetch_and_convert)
-├── fetch.rs       HTTP fetch + redirect policy (reqwest)
-├── extract.rs     Content-root + title heuristics
-├── refs.rs        Shared Referable trait + canonical reference-block renderer
-├── convert/
-│   ├── mod.rs     Format dispatcher (+ shared is_skippable)
-│   ├── text.rs    Reference-style URL collection
-│   ├── markdown.rs Inline-link markdown
-│   └── structured.rs JSON blocks
-├── search/
-│   ├── mod.rs     DDG Lite fetch + reference-style output
-│   ├── extract.rs DOM → SearchResult parser (uddg decoding)
-│   └── types.rs   Search output structs
-├── compress.rs    Whitespace/decorative reduction + token budgeting
-└── types.rs       Output structs
+Cargo.toml              Workspace + the webfetch-tools binary package
+src/main.rs             Unified CLI: `webfetch` / `websearch` subcommands
+crates/
+├── core/               webfetch-core: primitives shared by both tools
+│   └── src/
+│       ├── compress.rs   Whitespace/decorative reduction + token budgeting
+│       └── refs.rs       Referable trait + canonical reference-block renderer
+├── webfetch/           webfetch: fetch + convert library
+│   └── src/
+│       ├── lib.rs        Public API (convert_html, fetch_and_convert)
+│       ├── fetch.rs      HTTP fetch + redirect policy (reqwest)
+│       ├── extract.rs    Content-root + title heuristics
+│       ├── types.rs      Output structs
+│       └── convert/      Format dispatcher: text | markdown | structured
+└── websearch/          websearch: DuckDuckGo Lite search library
+    └── src/
+        ├── lib.rs        DDG Lite fetch + reference-style output
+        ├── extract.rs    DOM → SearchResult parser (uddg decoding)
+        └── types.rs      Search output structs
 ```
+
+Each leaf crate re-exports `webfetch_core::{compress, refs}`, so the shared
+reference-style logic has a single home but stays reachable as
+`webfetch::refs` / `websearch::refs`.
 
 ## Development
 
 ```bash
-cargo build
-cargo test
-cargo clippy --all-targets
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets
 ```

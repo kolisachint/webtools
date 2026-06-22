@@ -5,12 +5,14 @@
 //! them) or expanding full URLs inline (wasting tokens), links are replaced
 //! with compact `[N]` markers and collected into a recoverable reference list.
 
-pub mod compress;
+// Shared primitives live in webfetch-core; re-export them so both this
+// crate's internal modules (via `crate::compress` / `crate::refs`) and
+// external callers keep a stable path.
+pub use webfetch_core::{compress, refs};
+
 pub mod convert;
 pub mod extract;
 pub mod fetch;
-pub mod refs;
-pub mod search;
 pub mod types;
 
 pub use fetch::fetch_html;

@@ -1,0 +1,10 @@
+[package]
+name = "webfetch-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared primitives: compression, token budgeting, and reference-style URLs"
+
+[dependencies]
+serde = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
