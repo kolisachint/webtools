@@ -41,6 +41,7 @@ jobs:
           fi
 
       - name: Bump version in Cargo.toml
+        id: bump
         run: |
           # Read current version
           CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
@@ -90,7 +91,7 @@ jobs:
 
       - name: Commit and tag
         run: |
-          VERSION="${{ steps.release-type.outputs.version }}"
+          VERSION="${{ steps.bump.outputs.version }}"
           git add Cargo.toml Cargo.lock crates/*/Cargo.toml
           git commit -m "release: v${VERSION}"
           git tag "v${VERSION}"
