@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub use crate::tls::TlsConfig;
+
 /// Result of fetching and converting a web page.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchResult {
@@ -74,6 +76,10 @@ pub struct FetchOptions {
     pub content_type: ContentType,
     pub max_tokens: Option<usize>,
     pub timeout_secs: u64,
+    /// TLS trust configuration (OS store is honoured by default; this carries
+    /// the explicit `--ca-cert` / `--insecure` overrides).
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 impl Default for FetchOptions {
@@ -83,6 +89,7 @@ impl Default for FetchOptions {
             content_type: ContentType::Text,
             max_tokens: None,
             timeout_secs: 10,
+            tls: TlsConfig::default(),
         }
     }
 }

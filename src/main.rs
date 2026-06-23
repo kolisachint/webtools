@@ -4,9 +4,11 @@
 mod mcp;
 
 use std::io::Read;
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use webfetch::tls::TlsConfig;
 use webfetch::types::{ContentType, FetchOptions};
 use websearch::types::SearchOptions;
 
@@ -40,6 +42,16 @@ enum Commands {
         /// Request timeout in seconds.
         #[arg(long, default_value_t = 10)]
         timeout: u64,
+        /// Extra PEM CA certificate file(s) to trust as additional roots
+        /// (repeatable). Use behind a TLS-intercepting proxy whose root CA is
+        /// not in the OS store.
+        #[arg(long = "ca-cert", value_name = "PATH")]
+        ca_cert: Vec<PathBuf>,
+        /// Disable TLS certificate verification. LAST RESORT only: insecure and
+        /// open to interception. Prefer the OS trust store, SSL_CERT_FILE, or
+        /// --ca-cert.
+        #[arg(long)]
+        insecure: bool,
     },
     /// Search the web (DuckDuckGo Lite) with reference-style result URLs.
     Search {
@@ -57,6 +69,16 @@ enum Commands {
         /// Request timeout in seconds.
         #[arg(long, default_value_t = 10)]
         timeout: u64,
+        /// Extra PEM CA certificate file(s) to trust as additional roots
+        /// (repeatable). Use behind a TLS-intercepting proxy whose root CA is
+        /// not in the OS store.
+        #[arg(long = "ca-cert", value_name = "PATH")]
+        ca_cert: Vec<PathBuf>,
+        /// Disable TLS certificate verification. LAST RESORT only: insecure and
+        /// open to interception. Prefer the OS trust store, SSL_CERT_FILE, or
+        /// --ca-cert.
+        #[arg(long)]
+        insecure: bool,
     },
     /// Run as an MCP stdio server exposing `fetch` and `search` as tools.
     Mcp,
@@ -98,6 +120,8 @@ async fn run() -> anyhow::Result<()> {
             json,
             max_tokens,
             timeout,
+            ca_cert,
+            insecure,
         } => {
             let base = url.clone().unwrap_or_default();
             let options = FetchOptions {
@@ -105,6 +129,10 @@ async fn run() -> anyhow::Result<()> {
                 content_type: ContentType::parse(&output),
                 max_tokens,
                 timeout_secs: timeout,
+                tls: TlsConfig {
+                    ca_certs: ca_cert,
+                    insecure,
+                },
             };
 
             let result = match from_file {
@@ -143,12 +171,18 @@ async fn run() -> anyhow::Result<()> {
             json,
             safe_search,
             timeout,
+            ca_cert,
+            insecure,
         } => {
             let options = SearchOptions {
                 query,
                 max_results: Some(max_results),
                 safe_search: parse_safe_search(safe_search.as_deref()),
                 timeout_secs: timeout,
+                tls: TlsConfig {
+                    ca_certs: ca_cert,
+                    insecure,
+                },
             };
             let output = websearch::run_search(options).await?;
             if json {

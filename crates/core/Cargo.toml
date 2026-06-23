@@ -17,3 +17,6 @@ name = "webfetch_core"
 serde = { workspace = true }
 regex = { workspace = true }
 once_cell = { workspace = true }
+reqwest = { workspace = true }
+rustls-native-certs = { workspace = true }
+anyhow = { workspace = true }

@@ -15,6 +15,13 @@ Links become inline `[N]` markers with the full URLs collected into a trailing
 reference block — the agent sees `[1]` (≈1 token) but can still recover the
 exact URL.
 
+## Behind a proxy?
+
+`webtools` trusts the OS certificate store (plus `SSL_CERT_FILE`), so it works
+through TLS-intercepting corporate proxies out of the box. Add a custom root CA
+with `--ca-cert <PATH>`, or, as a last resort, skip verification with
+`--insecure`. See [TLS, proxies, and custom CAs](docs/product.md#tls-proxies-and-custom-cas).
+
 ## Docs
 
 - [Product](docs/product.md) — what it does, features, usage, MCP, architecture

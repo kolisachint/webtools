@@ -8,7 +8,7 @@
 // Shared primitives live in webfetch-core; re-export them so both this
 // crate's internal modules (via `crate::compress` / `crate::refs`) and
 // external callers keep a stable path.
-pub use webfetch_core::{compress, refs};
+pub use webfetch_core::{compress, refs, tls};
 
 pub mod convert;
 pub mod extract;
@@ -140,7 +140,7 @@ fn strip_duplicate_title(title: &str, content: String) -> String {
 
 /// Fetch a URL and convert it according to `options`.
 pub async fn fetch_and_convert(options: FetchOptions) -> anyhow::Result<FetchResult> {
-    let page = fetch::fetch_page(&options.url, options.timeout_secs).await?;
+    let page = fetch::fetch_page(&options.url, options.timeout_secs, &options.tls).await?;
     let mut result = convert_body(
         &page.body,
         &page.final_url,

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// The slim reference entry shared with the fetch path.
 pub use crate::refs::Reference;
+pub use crate::tls::TlsConfig;
 
 /// A single search hit, carrying its reference index so the inline body can
 /// cite `[N]` while the full URL lives in the reference block.
@@ -30,6 +31,10 @@ pub struct SearchOptions {
     pub max_results: Option<usize>,
     pub safe_search: Option<bool>,
     pub timeout_secs: u64,
+    /// TLS trust configuration (OS store is honoured by default; this carries
+    /// the explicit `--ca-cert` / `--insecure` overrides).
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 impl Default for SearchOptions {
@@ -39,6 +44,7 @@ impl Default for SearchOptions {
             max_results: Some(5),
             safe_search: None,
             timeout_secs: 10,
+            tls: TlsConfig::default(),
         }
     }
 }

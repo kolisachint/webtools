@@ -152,6 +152,48 @@ tests. While it is active the process prints a one-line warning to stderr on
 first use — **do not enable it for untrusted input**, as it re-opens SSRF to
 loopback, private, and metadata addresses.
 
+## TLS, proxies, and custom CAs
+
+`fetch` and `search` build their HTTPS clients to trust, in order:
+
+1. **The OS / system trust store** (`rustls-native-certs`). This is what makes
+   requests work behind a **TLS-intercepting proxy** (common on corporate
+   networks): the proxy presents a certificate signed by an organization root
+   CA that lives in the OS store. Install that root CA in the OS store and
+   `webtools` will trust it — no flags needed.
+2. **The bundled webpki roots**, used only as a fallback when the OS store
+   yields no usable certificates.
+3. **`SSL_CERT_FILE`**, if set and readable: its PEM certificates are loaded as
+   additional trust anchors (an unreadable value prints a warning and is
+   skipped).
+4. **`--ca-cert <PATH>`** (repeatable): extra PEM bundles to trust as roots —
+   the explicit way to add a proxy's root CA without touching the OS store.
+
+```bash
+# Trust a corporate proxy's root CA just for this call
+webtools fetch  --url https://docs.internal/api --ca-cert /etc/ssl/corp-root.pem
+webtools search --query "internal wiki" --ca-cert /etc/ssl/corp-root.pem
+
+# Or point SSL_CERT_FILE at a bundle
+SSL_CERT_FILE=/etc/ssl/corp-root.pem webtools fetch --url https://docs.internal/api
+```
+
+If you hit `invalid peer certificate: UnknownIssuer`, the server (or a proxy in
+front of it) is presenting a certificate from a CA your trust stores don't know.
+Add that CA via the OS store, `SSL_CERT_FILE`, or `--ca-cert` — in that order of
+preference.
+
+### `--insecure` (last resort)
+
+`--insecure` disables TLS certificate verification entirely. It is **never the
+default**, is strictly opt-in, and prints a loud warning to stderr. Use it only
+as a last resort for debugging or a known-trusted endpoint you cannot otherwise
+validate — it leaves the connection open to interception. Prefer `--ca-cert`.
+
+```bash
+webtools fetch --url https://self-signed.internal --insecure   # warns; unverified
+```
+
 ## Performance
 
 The conversion path is pure-CPU and allocation-light. Offline latency on the

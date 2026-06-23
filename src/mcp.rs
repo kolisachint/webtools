@@ -143,6 +143,9 @@ async fn handle_tool_call(msg: &Value) -> Result<Value> {
                     .and_then(Value::as_u64)
                     .map(|n| n as usize),
                 timeout_secs: args.get("timeout").and_then(Value::as_u64).unwrap_or(10),
+                // The MCP server uses the default trust setup (OS store +
+                // SSL_CERT_FILE); it exposes no insecure/extra-CA knobs.
+                tls: Default::default(),
             };
             let result = webfetch::fetch_and_convert(options).await?;
             Ok(tool_text(serde_json::to_string_pretty(&result)?))
@@ -165,6 +168,7 @@ async fn handle_tool_call(msg: &Value) -> Result<Value> {
                 ),
                 safe_search,
                 timeout_secs: args.get("timeout").and_then(Value::as_u64).unwrap_or(10),
+                tls: Default::default(),
             };
             let output = websearch::run_search(options).await?;
             Ok(tool_text(serde_json::to_string_pretty(&output)?))

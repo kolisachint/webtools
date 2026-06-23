@@ -5,6 +5,7 @@ resolver = "2"
 [workspace.dependencies]
 tokio = { version = "1.40", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli"] }
+rustls-native-certs = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4", features = ["derive"] }

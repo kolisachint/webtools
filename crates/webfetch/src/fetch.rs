@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::guard;
+use crate::tls::TlsConfig;
 
 const USER_AGENT: &str = concat!("webfetch/", env!("CARGO_PKG_VERSION"));
 const MAX_ATTEMPTS: u32 = 3;
@@ -45,6 +46,7 @@ fn build_client(
     url: &reqwest::Url,
     timeout_secs: u64,
     pinned: &[SocketAddr],
+    tls: &TlsConfig,
 ) -> anyhow::Result<Client> {
     let mut builder = Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
@@ -52,6 +54,10 @@ fn build_client(
         .user_agent(USER_AGENT)
         .gzip(true)
         .brotli(true);
+
+    // Trust the OS store (+ SSL_CERT_FILE / --ca-cert) so org/proxy root CAs
+    // are accepted, instead of only the bundled webpki roots.
+    builder = tls.apply(builder)?;
 
     if let Some(host) = url.host_str() {
         if !pinned.is_empty() {
@@ -171,7 +177,11 @@ async fn fetch_with_retries(client: &Client, url: &str) -> anyhow::Result<Hop> {
 /// re-pins each hop (closing the DNS-rebinding window for redirected hosts too),
 /// retrying transient failures with exponential backoff. Caps the redirect
 /// chain at [`MAX_REDIRECTS`] and the body at [`MAX_BODY_BYTES`].
-pub async fn fetch_page(url: &str, timeout_secs: u64) -> anyhow::Result<FetchedPage> {
+pub async fn fetch_page(
+    url: &str,
+    timeout_secs: u64,
+    tls: &TlsConfig,
+) -> anyhow::Result<FetchedPage> {
     let mut current = reqwest::Url::parse(url)?;
     let mut hops = 0usize;
 
@@ -179,7 +189,7 @@ pub async fn fetch_page(url: &str, timeout_secs: u64) -> anyhow::Result<FetchedP
         // Validate + resolve the host for THIS hop, then pin the connection to
         // exactly those addresses.
         let pinned = guard::validate_url(&current).await?;
-        let client = build_client(&current, timeout_secs, &pinned)?;
+        let client = build_client(&current, timeout_secs, &pinned, tls)?;
 
         match fetch_with_retries(&client, current.as_str()).await? {
             Hop::Page(page) => return Ok(page),

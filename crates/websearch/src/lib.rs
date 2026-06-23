@@ -7,7 +7,7 @@
 
 // Shared primitives from webfetch-core; re-exported so internal modules can
 // keep using `crate::compress` / `crate::refs`.
-pub use webfetch_core::{compress, refs};
+pub use webfetch_core::{compress, refs, tls};
 
 pub mod extract;
 pub mod types;
@@ -26,10 +26,12 @@ const MAX_ATTEMPTS: u32 = 3;
 /// Fetch the raw DuckDuckGo Lite results page for a query, retrying transient
 /// failures (connection/timeout, 5xx, 429) with exponential backoff.
 pub async fn fetch_ddg_lite(query: &str, options: &SearchOptions) -> anyhow::Result<String> {
-    let client = Client::builder()
+    let builder = Client::builder()
         .timeout(Duration::from_secs(options.timeout_secs))
-        .gzip(true)
-        .build()?;
+        .gzip(true);
+    // Trust the OS store (+ SSL_CERT_FILE / --ca-cert) so the request succeeds
+    // behind a TLS-intercepting proxy, not just with the bundled webpki roots.
+    let client = options.tls.apply(builder)?.build()?;
 
     let mut url = format!(
         "https://lite.duckduckgo.com/lite/?q={}",
