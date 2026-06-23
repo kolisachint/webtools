@@ -84,9 +84,18 @@ root `Cargo.toml`, all `crates/*/Cargo.toml`, and the internal
 
 ### Flow (do NOT bump versions or tag by hand)
 
+**Never edit `version = "…"` in any `Cargo.toml` (root, `crates/*`, or the
+internal `path + version` deps) inside a feature PR.** The release workflow is
+the sole owner of the version: it computes the next version from the latest
+`v*` git tag plus the PR's `cargo:<bump>` label, then rewrites every manifest.
+A manual bump is at best ignored and at worst confusing — historically it
+caused a skipped number (a PR bumped to 0.1.12, the workflow then released
+0.1.13). Leave versions untouched and just apply the label.
+
 1. `/pr <bump>` opens a PR labeled `cargo:<bump>`.
-2. On merge, `release.yml` bumps every version, updates `Cargo.lock`,
-   commits `release: v<version>`, tags `v<version>`, and pushes `main`.
+2. On merge, `release.yml` derives the next version from the latest `v*` tag,
+   bumps every manifest, updates `Cargo.lock`, commits `release: v<version>`,
+   tags `v<version>`, and pushes `main`.
 3. The tag triggers `release.yml`, which publishes the libraries to crates.io
    (in dependency order, skipping versions already on the index) and then
    builds + attaches Linux (`x86_64-unknown-linux-gnu`) and macOS
