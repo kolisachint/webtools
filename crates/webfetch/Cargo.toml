@@ -1,6 +1,6 @@
 [package]
 name = "webtools-fetch"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 description = "Token-efficient web content fetcher with reference-style URL preservation"
 license = "MIT"

@@ -89,8 +89,20 @@ pub fn convert_body(
         ),
     };
 
+    // Drop a leading body line that merely repeats the title (common when the
+    // title was derived from the page's first <h1>, which also opens the body).
+    content = strip_duplicate_title(&title, content);
+
     if let Some(max) = options.max_tokens {
-        content = compress::truncate_to_tokens(&content, max);
+        // In reference-style text output the `References:` block is appended to
+        // the end of `content`; truncate the body but keep that block intact so
+        // inline `[N]` markers still resolve (see truncate_preserving_refs).
+        let refs_block = if output_type == ContentType::Text {
+            convert::text::render_references(&references)
+        } else {
+            String::new()
+        };
+        content = compress::truncate_preserving_refs(&content, &refs_block, max);
     }
 
     FetchResult {
@@ -104,6 +116,26 @@ pub fn convert_body(
         metadata,
         source: source_url.to_string(),
     }
+}
+
+/// When the title was derived from the page's first heading, the body repeats
+/// it as its opening line. Drop that leading line when it normalizes to the
+/// same text as `title`. Conservative: only an exact normalized match of the
+/// *first* line is removed, so genuine content is never lost.
+fn strip_duplicate_title(title: &str, content: String) -> String {
+    if title.is_empty() {
+        return content;
+    }
+    let mut parts = content.splitn(2, '\n');
+    let first = parts.next().unwrap_or("");
+    if compress::compress_text(first) == compress::compress_text(title) {
+        return parts
+            .next()
+            .unwrap_or("")
+            .trim_start_matches('\n')
+            .to_string();
+    }
+    content
 }
 
 /// Fetch a URL and convert it according to `options`.

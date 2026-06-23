@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "webtools"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -1837,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "webtools-core"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "once_cell",
  "regex",
@@ -1846,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "webtools-fetch"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "ego-tree",
@@ -1861,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "webtools-search"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "reqwest",

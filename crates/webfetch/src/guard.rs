@@ -10,19 +10,35 @@
 //! Set `WEBFETCH_ALLOW_PRIVATE=1` to disable the guard (for trusted internal
 //! use or tests).
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::Once;
 
 use url::{Host, Url};
 
 /// Env var that, when set to `1`/`true`, disables the SSRF guard.
 const ALLOW_PRIVATE_ENV: &str = "WEBFETCH_ALLOW_PRIVATE";
 
+static ALLOW_PRIVATE_WARNING: Once = Once::new();
+
 /// Whether the guard is disabled via environment opt-out.
+///
+/// When active, emits a one-line warning to stderr (once per process) so an
+/// operator can see the SSRF guard has been turned off and private, loopback,
+/// and cloud-metadata addresses are reachable.
 pub fn allow_private() -> bool {
-    matches!(
+    let enabled = matches!(
         std::env::var(ALLOW_PRIVATE_ENV).ok().as_deref(),
         Some("1") | Some("true") | Some("TRUE")
-    )
+    );
+    if enabled {
+        ALLOW_PRIVATE_WARNING.call_once(|| {
+            eprintln!(
+                "warning: {ALLOW_PRIVATE_ENV} is set — SSRF guard disabled; \
+                 private, loopback, and metadata IPs are reachable"
+            );
+        });
+    }
+    enabled
 }
 
 /// Returns true if `ip` is not safe to fetch from a public-web client:
@@ -87,7 +103,11 @@ impl std::error::Error for BlockedUrl {}
 /// can pin the connection and avoid a DNS-rebinding TOCTOU window.
 ///
 /// A no-op (returns `Ok(vec![])`) when the guard is disabled via env.
-pub fn validate_url(url: &Url) -> Result<Vec<std::net::SocketAddr>, BlockedUrl> {
+///
+/// Async because domain validation resolves DNS via [`tokio::net::lookup_host`]
+/// rather than the blocking `std` resolver — important on the async fetch path
+/// (and the concurrent MCP server) so a slow lookup never blocks a tokio worker.
+pub async fn validate_url(url: &Url) -> Result<Vec<std::net::SocketAddr>, BlockedUrl> {
     if allow_private() {
         return Ok(Vec::new());
     }
@@ -114,11 +134,11 @@ pub fn validate_url(url: &Url) -> Result<Vec<std::net::SocketAddr>, BlockedUrl> 
             }
             Ok(Vec::new())
         }
-        Host::Domain(domain) => validate_domain(url, domain),
+        Host::Domain(domain) => validate_domain(url, domain).await,
     }
 }
 
-fn validate_domain(url: &Url, domain: &str) -> Result<Vec<std::net::SocketAddr>, BlockedUrl> {
+async fn validate_domain(url: &Url, domain: &str) -> Result<Vec<std::net::SocketAddr>, BlockedUrl> {
     // Block obvious local names early; DNS may also resolve these.
     let lower = domain.to_ascii_lowercase();
     if lower == "localhost" || lower.ends_with(".localhost") {
@@ -129,10 +149,10 @@ fn validate_domain(url: &Url, domain: &str) -> Result<Vec<std::net::SocketAddr>,
         .port_or_known_default()
         .ok_or_else(|| BlockedUrl(format!("no port for {url}")))?;
 
-    // Resolve and require that EVERY resolved address is public, then return
-    // them so the connection can be pinned to the validated set.
-    let addrs: Vec<_> = (domain, port)
-        .to_socket_addrs()
+    // Resolve (non-blocking) and require that EVERY resolved address is public,
+    // then return them so the connection can be pinned to the validated set.
+    let addrs: Vec<_> = tokio::net::lookup_host((domain, port))
+        .await
         .map_err(|e| BlockedUrl(format!("cannot resolve `{domain}`: {e}")))?
         .collect();
 
@@ -190,23 +210,42 @@ mod tests {
         assert!(!blocked("2606:4700:4700::1111")); // cloudflare v6
     }
 
-    #[test]
-    fn rejects_non_http_scheme() {
+    #[tokio::test]
+    async fn rejects_non_http_scheme() {
         let url = Url::parse("file:///etc/passwd").unwrap();
-        assert!(validate_url(&url).is_err());
+        assert!(validate_url(&url).await.is_err());
         let url = Url::parse("ftp://example.com/x").unwrap();
-        assert!(validate_url(&url).is_err());
+        assert!(validate_url(&url).await.is_err());
     }
 
-    #[test]
-    fn rejects_literal_metadata_ip_url() {
+    #[tokio::test]
+    async fn rejects_literal_metadata_ip_url() {
         let url = Url::parse("http://169.254.169.254/latest/meta-data/").unwrap();
-        assert!(validate_url(&url).is_err());
+        assert!(validate_url(&url).await.is_err());
     }
 
-    #[test]
-    fn rejects_localhost_name() {
+    #[tokio::test]
+    async fn rejects_localhost_name() {
         let url = Url::parse("http://localhost:8080/admin").unwrap();
-        assert!(validate_url(&url).is_err());
+        assert!(validate_url(&url).await.is_err());
+    }
+
+    // A redirect target is validated by the exact same `validate_url` the fetch
+    // loop runs (and pins) on every hop, so a redirect to a private/loopback IP
+    // is rejected before any connection is made.
+    #[tokio::test]
+    async fn rejects_redirect_target_to_private_ip() {
+        for target in [
+            "http://127.0.0.1/internal",
+            "http://10.0.0.1/admin",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",
+        ] {
+            let url = Url::parse(target).unwrap();
+            assert!(
+                validate_url(&url).await.is_err(),
+                "redirect target {target} should be blocked"
+            );
+        }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "webtools-core"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 description = "Shared primitives: compression, token budgeting, and reference-style URLs"
 license = "MIT"

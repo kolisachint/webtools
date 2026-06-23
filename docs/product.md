@@ -134,6 +134,24 @@ speaking line-delimited JSON-RPC 2.0. It implements protocol version
 { "command": "webtools", "args": ["mcp"] }
 ```
 
+## Security (SSRF guard)
+
+`fetch` is reachable from the CLI and the MCP server, so a crafted or
+prompt-injected URL could try to reach internal services. Before connecting,
+the guard rejects non-`http(s)` schemes and any host that resolves to a
+non-public IP (loopback, private ranges, link-local incl. the cloud metadata
+endpoint `169.254.169.254`, CGNAT, ULA, …). The resolved public addresses are
+**pinned** for the connection, closing the DNS-rebinding window between
+validation and connect. Redirects are followed manually so **every hop is
+re-validated and re-pinned**, not just the initial host. The response body is
+capped (5 MiB) and read with a running byte limit, so an oversized or malicious
+page is bounded before it is ever parsed.
+
+Set `WEBFETCH_ALLOW_PRIVATE=1` to disable the guard for trusted internal use or
+tests. While it is active the process prints a one-line warning to stderr on
+first use — **do not enable it for untrusted input**, as it re-opens SSRF to
+loopback, private, and metadata addresses.
+
 ## Performance
 
 The conversion path is pure-CPU and allocation-light. Offline latency on the

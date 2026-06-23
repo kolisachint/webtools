@@ -102,6 +102,129 @@ fn test_skippable_elements_excluded() {
     assert!(!text.contains("ignore me"));
 }
 
+// --- truncation must not destroy the reference block (priority 1) -----------
+
+#[test]
+fn test_truncation_keeps_complete_reference_block() {
+    // A long body with several links; total output exceeds the token budget.
+    let mut html = String::from("<html><head><title>Big</title></head><body><article>");
+    for i in 0..40 {
+        html.push_str(&format!(
+            "<p>Paragraph number {i} with some filler text to push the body over \
+             the token budget, and a <a href=\"https://example.com/page{i}\">link {i}</a> \
+             that must remain resolvable.</p>"
+        ));
+    }
+    html.push_str("</article></body></html>");
+
+    let opts = FetchOptions {
+        max_tokens: Some(120),
+        ..FetchOptions::default()
+    };
+    let r = convert_body(&html, "https://example.com/", Some("text/html"), &opts);
+
+    // The body was truncated...
+    assert!(r.content.contains("…[truncated]"), "content: {}", r.content);
+    // ...yet a complete References: block still terminates the output.
+    assert!(r.content.contains("References:"), "content: {}", r.content);
+    let tail = &r.content[r.content.find("References:").unwrap()..];
+
+    // Every inline [N] marker that survived must resolve to a reference line.
+    let re_marker = regex_lite_markers(&r.content[..r.content.find("References:").unwrap()]);
+    for n in re_marker {
+        assert!(
+            tail.contains(&format!("[{n}] ")),
+            "marker [{n}] has no reference line; tail: {tail}"
+        );
+    }
+    // And the last reference line is intact (ends with a full URL, not cut off).
+    assert!(
+        tail.trim_end().ends_with(|c: char| !c.is_whitespace()),
+        "refs block looks truncated: {tail}"
+    );
+    assert!(tail.contains("https://example.com/page"));
+}
+
+/// Collect the distinct `[N]` reference indices appearing in `text`.
+fn regex_lite_markers(text: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 1 && j < bytes.len() && bytes[j] == b']' {
+                if let Ok(n) = text[i + 1..j].parse::<usize>() {
+                    if !out.contains(&n) {
+                        out.push(n);
+                    }
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+// --- title de-duplication (priority 1) --------------------------------------
+
+#[test]
+fn test_leading_title_not_duplicated_in_body() {
+    let html = "<html><head><title>Widgets Guide</title></head>\
+                <body><article><h1>Widgets Guide</h1>\
+                <p>Body content here.</p></article></body></html>";
+    let r = convert_html(html, "https://example.com/p", &FetchOptions::default());
+    assert_eq!(r.title, "Widgets Guide");
+    // The body must not open with a second copy of the title.
+    assert!(
+        !r.content.trim_start().starts_with("Widgets Guide"),
+        "content began with a duplicate title: {:?}",
+        r.content
+    );
+    assert!(r.content.contains("Body content here."));
+}
+
+#[test]
+fn test_distinct_heading_is_kept() {
+    // Title from <title>, different first <h1>: nothing should be dropped.
+    let html = "<html><head><title>Site Name</title></head>\
+                <body><article><h1>Real Article Heading</h1>\
+                <p>Words.</p></article></body></html>";
+    let r = convert_html(html, "https://example.com/p", &FetchOptions::default());
+    assert_eq!(r.title, "Site Name");
+    assert!(r.content.contains("Real Article Heading"));
+}
+
+// --- deeply nested DOM (priority 2: O(n) content_root) ----------------------
+
+#[test]
+fn test_deeply_nested_dom_extracts_content() {
+    // Build a deeply nested div chain ending in real text; the largest
+    // text-bearing container heuristic must still find the content.
+    let depth = 400;
+    let mut html = String::from("<html><body>");
+    for _ in 0..depth {
+        html.push_str("<div>");
+    }
+    html.push_str("<p>deep content marker</p>");
+    for _ in 0..depth {
+        html.push_str("</div>");
+    }
+    html.push_str("</body></html>");
+
+    let converted = convert(&html, "https://example.com/", ContentType::Text);
+    assert!(
+        converted.content.contains("deep content marker"),
+        "content: {}",
+        converted.content
+    );
+}
+
 // --- format dispatch --------------------------------------------------------
 
 #[test]

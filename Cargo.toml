@@ -18,14 +18,14 @@ once_cell = "1.19"
 # Internal crates (path + version for crates.io publishing).
 # Published under webtools-* names; the dependency key (and lib name) stays
 # webfetch_core / webfetch / websearch so source imports are unchanged.
-webfetch-core = { package = "webtools-core", path = "crates/core", version = "0.1.11" }
-webfetch = { package = "webtools-fetch", path = "crates/webfetch", version = "0.1.11" }
-websearch = { package = "webtools-search", path = "crates/websearch", version = "0.1.11" }
+webfetch-core = { package = "webtools-core", path = "crates/core", version = "0.1.12" }
+webfetch = { package = "webtools-fetch", path = "crates/webfetch", version = "0.1.12" }
+websearch = { package = "webtools-search", path = "crates/websearch", version = "0.1.12" }
 
 # The workspace root is also the unified CLI binary.
 [package]
 name = "webtools"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 description = "Unified, token-efficient web fetch + search CLI for LLM agents"
 

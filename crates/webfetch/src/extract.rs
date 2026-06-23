@@ -1,6 +1,30 @@
+use std::collections::HashMap;
+
+use ego_tree::{NodeId, NodeRef};
+use scraper::node::Node;
 use scraper::{ElementRef, Html, Selector};
 
 use crate::types::Metadata;
+
+/// Sum the trimmed length of every descendant text node, for every node in the
+/// tree, in a single bottom-up pass.
+///
+/// The previous "largest `<div>`" heuristic called `el.text()` (a full subtree
+/// walk) once per `<div>`; on nested DOMs the same text was re-summed at every
+/// ancestor, making it ~O(n²). Computing each node's subtree text length once
+/// and reading it back from the map keeps the identical "largest text-bearing
+/// container" semantics in O(n).
+fn subtree_text_lengths(root: NodeRef<Node>, out: &mut HashMap<NodeId, usize>) -> usize {
+    let mut total = match root.value() {
+        Node::Text(t) => t.trim().len(),
+        _ => 0,
+    };
+    for child in root.children() {
+        total += subtree_text_lengths(child, out);
+    }
+    out.insert(root.id(), total);
+    total
+}
 
 /// Pick the element most likely to contain the primary article content.
 ///
@@ -15,11 +39,15 @@ pub fn content_root(doc: &Html) -> Option<ElementRef<'_>> {
         }
     }
 
-    // Fall back to the largest text-bearing <div>.
+    // Fall back to the largest text-bearing <div>, using one bottom-up pass to
+    // compute every node's subtree text length up front.
     if let Ok(div_sel) = Selector::parse("div") {
+        let mut lengths: HashMap<NodeId, usize> = HashMap::new();
+        subtree_text_lengths(doc.tree.root(), &mut lengths);
+
         let mut best: Option<(usize, ElementRef)> = None;
         for el in doc.select(&div_sel) {
-            let len = el.text().map(|t| t.trim().len()).sum::<usize>();
+            let len = lengths.get(&el.id()).copied().unwrap_or(0);
             if best.as_ref().is_none_or(|(b, _)| len > *b) {
                 best = Some((len, el));
             }
