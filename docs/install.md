@@ -20,7 +20,6 @@ Each tagged release attaches one archive per platform, a per-archive
 |----|------|---------------|-------|
 | Linux (glibc)  | x86_64  | `x86_64-unknown-linux-gnu`    | `webtools-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux (musl)   | x86_64  | `x86_64-unknown-linux-musl`   | `webtools-x86_64-unknown-linux-musl.tar.gz` |
-| Linux (glibc)  | aarch64 | `aarch64-unknown-linux-gnu`   | `webtools-aarch64-unknown-linux-gnu.tar.gz` |
 | Linux (musl)   | aarch64 | `aarch64-unknown-linux-musl`  | `webtools-aarch64-unknown-linux-musl.tar.gz` |
 | macOS          | x86_64  | `x86_64-apple-darwin`         | `webtools-x86_64-apple-darwin.tar.gz` |
 | macOS          | aarch64 | `aarch64-apple-darwin`        | `webtools-aarch64-apple-darwin.tar.gz` |
