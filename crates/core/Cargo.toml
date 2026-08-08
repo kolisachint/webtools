@@ -2,6 +2,7 @@
 name = "webtools-core"
 version = "0.1.16"
 edition = "2021"
+rust-version = "1.82"
 description = "Shared primitives: compression, token budgeting, and reference-style URLs"
 license = "MIT"
 repository = "https://github.com/kolisachint/webtools"

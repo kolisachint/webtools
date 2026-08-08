@@ -28,7 +28,10 @@ Each tagged release attaches one archive per platform, a per-archive
 ### Verify the download
 
 ```bash
-TAG=v0.1.14
+# Resolve the latest tag rather than pinning one here: a hard-coded version in
+# this file goes stale on the very next release.
+TAG=$(curl -fsSL https://api.github.com/repos/kolisachint/webtools/releases/latest \
+      | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
 ASSET=webtools-x86_64-unknown-linux-gnu.tar.gz
 base="https://github.com/kolisachint/webtools/releases/download/$TAG"
 curl -fsSLO "$base/$ASSET"
@@ -97,13 +100,20 @@ let result = webfetch::fetch_and_convert(FetchOptions {
     ..opts
 }).await?;
 
-// ── Search: zero-infrastructure DuckDuckGo Lite ─────────────────────
+// ── Search: keyless DuckDuckGo by default ───────────────────────────
 let search_opts = SearchOptions {
     query: "rust async runtime".into(),
     max_results: Some(5),
+    // Or a keyed backend. The libraries never read a config file or the
+    // environment — the caller resolves credentials and passes them in.
+    // provider: websearch::Provider::Brave { api_key },
     ..Default::default()
 };
 let output = websearch::run_search(search_opts).await?;
+if output.status.is_failure() {
+    // Blocked or unparseable. Distinct from "no hits", which is `Empty`.
+    eprintln!("search did not answer: {:?}", output.status);
+}
 for hit in &output.results {
     println!("{} [{}]", hit.title, hit.ref_index);
 }
@@ -129,17 +139,26 @@ cargo test --workspace
 
 ## Releasing
 
-Releases are label-driven. Open a PR with the `/pr <patch|minor|major>` command
-(see `.agents/commands/pr.md`); merging a PR labeled `cargo:<bump>` triggers
-`.github/workflows/merge-release.yml`, which bumps every crate version, tags
-`v<version>`, and pushes. The tag then triggers
-`.github/workflows/release.yml`, which publishes the libraries to crates.io and
-attaches Linux + macOS binaries to the GitHub release. See
-[`ci/README.md`](../ci/README.md) for details.
+Releases are label-driven, and a single workflow does all of it. Open a PR with
+the `/pr <patch|minor|major>` command (see `.agents/commands/pr.md`); merging a
+PR labeled `cargo:<bump>` runs `.github/workflows/release.yml`, which derives
+the next version from the latest `v*` tag, rewrites every manifest, stamps the
+changelog, tags, publishes the libraries to crates.io, and attaches binaries for
+all six targets. See [`ci/README.md`](../ci/README.md) for details.
 
-Manual fallback (only if needed):
+**Pushing a tag by hand does not release anything.** `release.yml` triggers on a
+merged pull request, not on a tag push — an earlier split design triggered on
+tags, and the documentation outlived it. To release without a code change, open
+a trivial PR and label it, or run the workflow from the Actions tab.
+
+### Development checks
 
 ```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
+
+CI runs these on Linux, compiles the workspace on macOS and Windows (both are
+release targets), and builds once on the declared `rust-version` so the MSRV
+stays honest.
