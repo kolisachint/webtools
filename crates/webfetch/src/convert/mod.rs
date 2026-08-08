@@ -4,7 +4,9 @@ pub mod markdown;
 pub mod structured;
 pub mod text;
 
-use crate::compress::{compress_block, compress_text};
+use scraper::Html;
+
+use crate::compress::compress_block;
 use crate::types::{ContentType, UrlReference};
 
 /// Elements whose contents never belong in extracted output (scripts,
@@ -17,46 +19,48 @@ pub(crate) fn is_skippable(name: &str) -> bool {
     )
 }
 
-/// A converted document: the rendered `content` plus any preserved references.
+/// A converted document: the rendered `content` plus the references it cites.
+///
+/// `content` never carries the trailing `References:` block — assembling that
+/// is [`crate::refs::fit_to_budget`]'s job, because whether a reference survives
+/// depends on whether the (possibly truncated) body still cites it.
 pub struct Converted {
     pub content: String,
     pub references: Vec<UrlReference>,
 }
 
-/// Convert HTML to the requested content type.
-///
-/// For [`ContentType::Text`], the reference list is rendered into a trailing
-/// `References:` block appended to the content (and also returned separately).
-pub fn convert(html: &str, base_url: &str, content_type: ContentType) -> Converted {
+/// Convert a parsed document to the requested content type.
+pub fn convert_parsed(doc: &Html, base_url: &str, content_type: ContentType) -> Converted {
     match content_type {
         ContentType::Text => {
-            let (body, references) = text::html_to_text_with_refs(html, base_url);
-            let body = compress_block(&body);
-            let refs_block = text::render_references(&references);
-            let content = if refs_block.is_empty() {
-                body
-            } else {
-                format!("{}\n\n{}", body, refs_block)
-            };
+            let (body, references) = text::text_with_refs(doc, base_url);
             Converted {
-                content,
+                content: compress_block(&body),
                 references,
             }
         }
         ContentType::Markdown => {
-            let md = markdown::html_to_markdown(html, base_url);
+            let (md, references) = markdown::markdown_with_refs(doc, base_url);
             Converted {
                 content: compress_block(&md),
-                references: Vec::new(),
+                references,
             }
         }
         ContentType::Structured => {
-            let doc = structured::html_to_structured(html, base_url);
-            let _ = compress_text; // available for callers extending block kinds
+            let parsed = structured::structured(doc, base_url);
             Converted {
-                content: structured::to_json(&doc),
-                references: doc.references,
+                content: structured::to_json(&parsed),
+                references: parsed.references,
             }
         }
     }
+}
+
+/// [`convert_parsed`] for callers holding raw HTML.
+///
+/// Prefer the parsed form: the full pipeline used to parse the same document
+/// twice — once for the title and metadata, once here — which was roughly a
+/// third of its total cost.
+pub fn convert(html: &str, base_url: &str, content_type: ContentType) -> Converted {
+    convert_parsed(&Html::parse_document(html), base_url, content_type)
 }

@@ -107,14 +107,21 @@ impl std::error::Error for BlockedUrl {}
 /// Async because domain validation resolves DNS via [`tokio::net::lookup_host`]
 /// rather than the blocking `std` resolver — important on the async fetch path
 /// (and the concurrent MCP server) so a slow lookup never blocks a tokio worker.
+/// Only `http(s)` is fetchable. Checked before the env opt-out is consulted:
+/// `WEBFETCH_ALLOW_PRIVATE` exists to reach internal *hosts*, not to turn an
+/// HTTP client into a file reader.
+fn check_scheme(url: &Url) -> Result<(), BlockedUrl> {
+    match url.scheme() {
+        "http" | "https" => Ok(()),
+        other => Err(BlockedUrl(format!("scheme `{other}` not allowed"))),
+    }
+}
+
 pub async fn validate_url(url: &Url) -> Result<Vec<std::net::SocketAddr>, BlockedUrl> {
+    check_scheme(url)?;
+
     if allow_private() {
         return Ok(Vec::new());
-    }
-
-    match url.scheme() {
-        "http" | "https" => {}
-        other => return Err(BlockedUrl(format!("scheme `{other}` not allowed"))),
     }
 
     let host = url
@@ -228,6 +235,18 @@ mod tests {
     async fn rejects_localhost_name() {
         let url = Url::parse("http://localhost:8080/admin").unwrap();
         assert!(validate_url(&url).await.is_err());
+    }
+
+    /// The env opt-out widens which hosts are reachable; it must not widen
+    /// which schemes are. Tested against the scheme check directly rather than
+    /// by setting the variable, which is process-global and would race every
+    /// other test in this binary.
+    #[test]
+    fn scheme_check_is_independent_of_the_env_opt_out() {
+        for bad in ["file:///etc/passwd", "ftp://example.com/x", "gopher://x/"] {
+            assert!(check_scheme(&Url::parse(bad).unwrap()).is_err(), "{bad}");
+        }
+        assert!(check_scheme(&Url::parse("https://example.com").unwrap()).is_ok());
     }
 
     // A redirect target is validated by the exact same `validate_url` the fetch

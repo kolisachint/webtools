@@ -20,10 +20,28 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use anyhow::Context;
 use reqwest::{Certificate, ClientBuilder};
 use serde::Deserialize;
+
+/// The system trust anchors, in DER, loaded at most once per process.
+///
+/// [`TlsConfig::apply`] runs once per client, and the fetch path builds a fresh
+/// client for every redirect hop (to keep per-URL IP pinning), so without this
+/// cache a single redirected fetch would read and PEM-parse the whole OS
+/// certificate bundle several times over.
+fn native_root_ders() -> &'static [Vec<u8>] {
+    static ROOTS: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
+    ROOTS.get_or_init(|| {
+        let native = rustls_native_certs::load_native_certs();
+        for err in &native.errors {
+            eprintln!("webtools: warning: reading a system certificate failed: {err}");
+        }
+        native.certs.into_iter().map(|c| c.to_vec()).collect()
+    })
+}
 
 /// How an HTTP client should establish TLS trust.
 ///
@@ -58,13 +76,9 @@ impl TlsConfig {
 
         // 1. OS / system trust store. This is what lets an org root CA — or one
         //    injected by a TLS-intercepting proxy — be trusted.
-        let native = rustls_native_certs::load_native_certs();
-        for err in &native.errors {
-            eprintln!("webtools: warning: reading a system certificate failed: {err}");
-        }
         let mut native_roots = 0usize;
-        for cert in native.certs {
-            if let Ok(c) = Certificate::from_der(&cert) {
+        for cert in native_root_ders() {
+            if let Ok(c) = Certificate::from_der(cert) {
                 builder = builder.add_root_certificate(c);
                 native_roots += 1;
             }

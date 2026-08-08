@@ -2,10 +2,54 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::tls::TlsConfig;
 
+/// Whether a fetch actually produced content.
+///
+/// An extraction that yields nothing used to be reported exactly like a
+/// successful one — empty `content`, exit 0 — so a caller could not tell a
+/// blank page from a page whose text never arrives without a browser. Agents
+/// read that as "this page has nothing to say" and moved on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentStatus {
+    /// Content was extracted.
+    Ok,
+    /// The document parsed but genuinely holds no text.
+    Empty,
+    /// An HTML shell with scripts and no text: the content is rendered by
+    /// JavaScript, which this fetcher does not run.
+    NeedsJs,
+    /// The document was too deeply nested to parse within a sane time budget
+    /// and was refused before parsing. See `webfetch::limits`.
+    TooComplex,
+}
+
+impl ContentStatus {
+    /// Did extraction fail to produce usable content?
+    pub fn is_failure(self) -> bool {
+        !matches!(self, ContentStatus::Ok)
+    }
+
+    /// A one-line explanation, or `None` when content came back normally.
+    pub fn note(self) -> Option<&'static str> {
+        match self {
+            ContentStatus::Ok => None,
+            ContentStatus::Empty => Some("the page parsed but contains no text"),
+            ContentStatus::NeedsJs => Some(
+                "no text content: the page renders its body with JavaScript, \
+                 which webtools does not execute",
+            ),
+            ContentStatus::TooComplex => {
+                Some("the document is too deeply nested to parse safely and was refused")
+            }
+        }
+    }
+}
+
 /// Result of fetching and converting a web page.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchResult {
     pub title: String,
+    /// The URL the content actually came from, after redirects.
     pub final_url: String,
     pub content: String,
     pub content_type: ContentType,
@@ -13,9 +57,15 @@ pub struct FetchResult {
     /// content-type for anything not rendered.
     pub media: String,
     pub token_estimate: usize,
+    /// Whether content was extracted — see [`ContentStatus`].
+    pub status: ContentStatus,
+    /// References cited by `content`. When `max_tokens` truncates the body,
+    /// references the surviving text no longer cites are dropped from both, so
+    /// this list and the inline `[N]` markers always agree.
     pub references: Vec<UrlReference>,
     #[serde(default)]
     pub metadata: Metadata,
+    /// The URL that was requested, before any redirect.
     pub source: String,
 }
 
@@ -32,6 +82,10 @@ pub struct Metadata {
     pub lang: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub site_name: Option<String>,
+    /// The document's declared character set, when it is not UTF-8. Bodies are
+    /// decoded as UTF-8, so a value here means the text may be garbled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charset: Option<String>,
 }
 
 /// A single preserved URL, recoverable by its `index`.

@@ -2,7 +2,7 @@ use webfetch::compress::{compress_text, estimate_tokens, truncate_to_tokens};
 use webfetch::convert::convert;
 use webfetch::convert::text::{html_to_text_with_refs, render_references};
 use webfetch::media::{classify, Media};
-use webfetch::types::{ContentType, FetchOptions};
+use webfetch::types::{ContentStatus, ContentType, FetchOptions};
 use webfetch::{convert_body, convert_html};
 
 const DOCS: &str = include_str!("fixtures/docs.html");
@@ -27,10 +27,15 @@ fn test_compress_removes_decorative() {
 #[test]
 fn test_truncate_to_tokens() {
     let text = "a".repeat(100);
-    let out = truncate_to_tokens(&text, 5); // ~20 chars
-    assert!(out.starts_with(&"a".repeat(20)));
+    let out = truncate_to_tokens(&text, 5);
     assert!(out.contains("truncated"));
     assert!(estimate_tokens(&text) == 25);
+    // The returned string honours the budget it was given, marker included.
+    assert!(
+        estimate_tokens(&out) <= 5,
+        "estimate {}",
+        estimate_tokens(&out)
+    );
 }
 
 // --- reference-style URL preservation (the core feature) --------------------
@@ -86,14 +91,20 @@ fn test_references_block_rendering() {
 
 #[test]
 fn test_text_output_appends_reference_block() {
-    let converted = convert(BLOG, "https://blog.example.com/post", ContentType::Text);
-    assert!(converted.content.contains("references page [1]"));
-    assert!(converted.content.contains("References:"));
-    assert!(converted
-        .content
-        .contains("[1] https://blog.example.com/refs"));
+    // `convert` returns the body and its references separately; the pipeline
+    // assembles the trailing block, because which references survive depends on
+    // what the (possibly truncated) body still cites.
+    let r = convert_body(
+        BLOG,
+        "https://blog.example.com/post",
+        Some("text/html"),
+        &FetchOptions::default(),
+    );
+    assert!(r.content.contains("references page [1]"));
+    assert!(r.content.contains("References:"));
+    assert!(r.content.contains("[1] https://blog.example.com/refs"));
     // Whitespace inside the paragraph was compressed.
-    assert!(converted.content.contains("on our references page"));
+    assert!(r.content.contains("on our references page"));
 }
 
 #[test]
@@ -123,6 +134,16 @@ fn test_truncation_keeps_complete_reference_block() {
     };
     let r = convert_body(&html, "https://example.com/", Some("text/html"), &opts);
 
+    // The budget is actually honoured. Reserving room for the *whole*
+    // reference block and appending it regardless used to overshoot a small
+    // cap by more than an order of magnitude on a link-dense page.
+    assert!(
+        r.token_estimate <= 120,
+        "token_estimate {} content: {}",
+        r.token_estimate,
+        r.content
+    );
+
     // The body was truncated...
     assert!(r.content.contains("…[truncated]"), "content: {}", r.content);
     // ...yet a complete References: block still terminates the output.
@@ -143,6 +164,78 @@ fn test_truncation_keeps_complete_reference_block() {
         "refs block looks truncated: {tail}"
     );
     assert!(tail.contains("https://example.com/page"));
+
+    // References the surviving body no longer cites are dropped, so the
+    // `references` array and the inline markers never disagree.
+    assert!(
+        r.references.len() < 40,
+        "uncited references were kept: {}",
+        r.references.len()
+    );
+    let body = &r.content[..r.content.find("References:").unwrap()];
+    for reference in &r.references {
+        assert!(
+            body.contains(&format!("[{}]", reference.index)),
+            "reference [{}] is listed but not cited",
+            reference.index
+        );
+    }
+}
+
+/// The headline regression: a link-dense page must not answer a small budget
+/// with a full reference block. Measured before the fix: `--max-tokens 200`
+/// returned ~3300 estimated tokens.
+#[test]
+fn test_link_dense_page_respects_a_small_budget() {
+    let mut html = String::from("<html><head><title>Links</title></head><body><article>");
+    for i in 0..120 {
+        html.push_str(&format!(
+            "<p>Item {i}: see <a href=\"https://example.com/very/long/path/segment/{i}\
+             ?query=value&amp;other=thing#frag\">link {i}</a>.</p>"
+        ));
+    }
+    html.push_str("</article></body></html>");
+
+    for budget in [50usize, 200, 1000] {
+        let opts = FetchOptions {
+            max_tokens: Some(budget),
+            ..FetchOptions::default()
+        };
+        let r = convert_body(&html, "https://example.com/", Some("text/html"), &opts);
+        assert!(
+            r.token_estimate <= budget,
+            "budget {budget} -> estimate {}",
+            r.token_estimate
+        );
+    }
+}
+
+/// Structured output is JSON; truncating its text would hand the caller a
+/// broken document, so blocks are dropped and the document re-serialized.
+#[test]
+fn test_structured_output_stays_valid_json_under_a_budget() {
+    let mut html = String::from("<html><head><title>S</title></head><body><article>");
+    for i in 0..80 {
+        html.push_str(&format!(
+            "<p>Paragraph {i} with enough words to matter to the budget.</p>"
+        ));
+    }
+    html.push_str("</article></body></html>");
+
+    let opts = FetchOptions {
+        content_type: ContentType::Structured,
+        max_tokens: Some(150),
+        ..FetchOptions::default()
+    };
+    let r = convert_body(&html, "https://example.com/", Some("text/html"), &opts);
+    let v: serde_json::Value =
+        serde_json::from_str(&r.content).expect("structured output must stay parseable");
+    assert!(v["blocks"].is_array());
+    assert!(
+        r.token_estimate <= 150,
+        "estimate {} exceeded the budget",
+        r.token_estimate
+    );
 }
 
 /// Collect the distinct `[N]` reference indices appearing in `text`.
@@ -234,6 +327,8 @@ fn test_markdown_keeps_links_inline() {
         .content
         .contains("[references page](https://blog.example.com/refs)"));
     assert!(converted.content.contains("# Why References Matter"));
+    // Links are inline *and* collected, so `--json` callers get them either way.
+    assert!(!converted.references.is_empty());
 }
 
 #[test]
@@ -255,6 +350,50 @@ fn test_spa_shell_yields_empty_body() {
     let converted = convert(SPA, "https://spa.example.com/", ContentType::Text);
     assert!(converted.references.is_empty());
     assert!(converted.content.trim().is_empty());
+}
+
+/// An empty extraction used to be indistinguishable from a successful one, so a
+/// caller could not tell a blank page from a page that needs a browser.
+#[test]
+fn test_spa_shell_is_reported_as_needing_js() {
+    let r = convert_html(SPA, "https://spa.example.com/", &FetchOptions::default());
+    assert_eq!(r.status, ContentStatus::NeedsJs);
+    assert!(r.status.is_failure());
+    assert!(r.status.note().is_some());
+}
+
+/// A document nested far past anything a real page reaches is refused before
+/// parsing: html5ever's tree builder is quadratic in depth, and the parse would
+/// otherwise run for minutes inside the body cap.
+#[test]
+fn test_pathological_nesting_is_refused_quickly() {
+    let depth = 60_000;
+    let html = format!(
+        "<html><body>{}<p>x</p>{}</body></html>",
+        "<div>".repeat(depth),
+        "</div>".repeat(depth)
+    );
+    let start = std::time::Instant::now();
+    let r = convert_html(&html, "https://example.com/", &FetchOptions::default());
+    assert_eq!(r.status, ContentStatus::TooComplex);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "took {:?} — the guard did not short-circuit the parse",
+        start.elapsed()
+    );
+}
+
+/// The requested URL and the URL content came from are different facts; both
+/// fields used to hold the post-redirect URL.
+#[test]
+fn test_source_records_the_requested_url() {
+    let r = convert_html(
+        BLOG,
+        "https://blog.example.com/post",
+        &FetchOptions::default(),
+    );
+    assert_eq!(r.source, "https://blog.example.com/post");
+    assert_eq!(r.final_url, "https://blog.example.com/post");
 }
 
 // --- media classification + passthrough (non-HTML handling) -----------------

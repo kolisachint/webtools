@@ -1,5 +1,6 @@
 use websearch::extract::{parse_ddg_lite, resolve_result_url};
-use websearch::{build_output, build_refs, format_results, render_references};
+use websearch::types::SearchStatus;
+use websearch::{build_output_from_ddg, build_refs, format_results, render_references};
 
 const DDG: &str = include_str!("fixtures/ddg_lite.html");
 
@@ -95,21 +96,38 @@ fn test_render_references_block() {
 
 #[test]
 fn test_build_output_end_to_end() {
-    let out = build_output("react 19", DDG, 5);
+    let out = build_output_from_ddg("react 19", DDG, 5);
     assert_eq!(out.query, "react 19");
     assert_eq!(out.result_count, 3);
     assert_eq!(out.references.len(), 3);
     assert!(out.token_estimate > 0);
+    assert_eq!(out.status, SearchStatus::Ok);
+    assert_eq!(out.provider, "duckduckgo");
 
     // Round-trips through JSON cleanly.
     let json = serde_json::to_string(&out).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v["results"][0]["ref_index"], 1);
+    assert_eq!(v["status"], "ok");
+}
+
+/// A page we cannot parse is a failure, not a query with no answer. Reporting
+/// it as an empty success is what let a rate-limited search look like "the web
+/// has nothing on this".
+#[test]
+fn test_unparseable_page_is_reported_as_blocked() {
+    let out = build_output_from_ddg("nothing", "<html><body>no results</body></html>", 5);
+    assert_eq!(out.result_count, 0);
+    assert!(out.references.is_empty());
+    assert_eq!(out.status, SearchStatus::Blocked);
+    assert!(out.status.is_failure());
 }
 
 #[test]
-fn test_empty_page_yields_no_results() {
-    let out = build_output("nothing", "<html><body>no results</body></html>", 5);
-    assert_eq!(out.result_count, 0);
-    assert!(out.references.is_empty());
+fn test_real_results_page_with_no_hits_is_empty() {
+    let html = "<html><body><table><tr><td class=\"result-count\">No results.</td>\
+                </tr></table></body></html>";
+    let out = build_output_from_ddg("zzz", html, 5);
+    assert_eq!(out.status, SearchStatus::Empty);
+    assert!(!out.status.is_failure());
 }

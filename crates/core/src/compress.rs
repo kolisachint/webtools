@@ -33,6 +33,24 @@ pub fn compress_block(text: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
+/// Is this byte one of the punctuation characters a BPE tokenizer almost
+/// always splits on? See [`estimate_tokens`].
+fn is_url_punct(b: u8) -> bool {
+    matches!(
+        b,
+        b'/' | b':' | b'.' | b'?' | b'#' | b'&' | b'=' | b'%' | b'~'
+    )
+}
+
+/// Token cost of `text` in *quarter-tokens*, the unit both [`estimate_tokens`]
+/// and [`truncate_to_tokens`] work in so the two can never disagree.
+///
+/// One byte costs one quarter-token (the ~4-chars-per-token rule); each URL
+/// punctuation byte costs two extra (the half-token surcharge).
+fn cost_quarters(text: &str) -> usize {
+    text.len() + 2 * text.bytes().filter(|b| is_url_punct(*b)).count()
+}
+
 /// Fast token approximation.
 ///
 /// Prose is ~4 characters per token, which matches common BPE tokenizers
@@ -44,60 +62,40 @@ pub fn compress_block(text: &str) -> String {
 /// especially) toward its true token count while leaving prose essentially
 /// unchanged. The heuristic is deterministic and a single linear scan.
 pub fn estimate_tokens(text: &str) -> usize {
-    let base = text.len() / 4;
-    let url_punct = text
-        .bytes()
-        .filter(|b| {
-            matches!(
-                b,
-                b'/' | b':' | b'.' | b'?' | b'#' | b'&' | b'=' | b'%' | b'~'
-            )
-        })
-        .count();
-    base + url_punct / 2
+    cost_quarters(text) / 4
 }
 
-/// The smallest body budget we will ever leave after reserving room for a
-/// reference block, so that a page dominated by links still shows *some* body.
-const MIN_BODY_TOKENS: usize = 64;
+/// The elision marker appended when [`truncate_to_tokens`] drops content.
+pub const TRUNCATION_MARKER: &str = "\n…[truncated]";
 
 /// Truncate text to roughly `max_tokens`, on a character boundary, appending
 /// an elision marker when content is dropped.
+///
+/// The prefix is chosen with the *same* cost model [`estimate_tokens`] uses, so
+/// `estimate_tokens(truncate_to_tokens(t, n)) <= n` holds for the returned body
+/// even on punctuation-dense text. (A naive `max_tokens * 4` character cut
+/// ignores the URL surcharge and overshoots badly on link-heavy pages.)
 pub fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
-    let max_chars = max_tokens.saturating_mul(4);
-    if text.len() <= max_chars {
+    if estimate_tokens(text) <= max_tokens {
         return text.to_string();
     }
-    let mut end = max_chars;
+    // Reserve room for the marker so the returned string still fits the budget.
+    let budget = (max_tokens * 4).saturating_sub(cost_quarters(TRUNCATION_MARKER));
+
+    let mut spent = 0usize;
+    let mut end = 0usize;
+    for (i, b) in text.bytes().enumerate() {
+        let next = spent + if is_url_punct(b) { 3 } else { 1 };
+        if next > budget {
+            break;
+        }
+        spent = next;
+        end = i + 1;
+    }
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}\n…[truncated]", &text[..end])
-}
-
-/// Truncate `content` to `max_tokens` while keeping a trailing `refs_block`
-/// (a rendered `References:` list) intact.
-///
-/// Reference-style output appends the block to the end of the content; a plain
-/// `truncate_to_tokens` over the whole string would cut the references off,
-/// leaving inline `[N]` markers that resolve to nothing. Instead we strip the
-/// block, truncate only the body to the budget left after reserving room for
-/// the block (floored at [`MIN_BODY_TOKENS`] so a link-heavy page keeps some
-/// body), then re-append the block whole.
-pub fn truncate_preserving_refs(content: &str, refs_block: &str, max_tokens: usize) -> String {
-    if refs_block.is_empty() {
-        return truncate_to_tokens(content, max_tokens);
-    }
-    // The block sits at the very end, joined to the body by a blank line.
-    let body = content
-        .strip_suffix(refs_block)
-        .map(|b| b.trim_end_matches('\n'))
-        .unwrap_or(content);
-
-    let refs_tokens = estimate_tokens(refs_block);
-    let body_budget = max_tokens.saturating_sub(refs_tokens).max(MIN_BODY_TOKENS);
-    let body = truncate_to_tokens(body, body_budget);
-    format!("{body}\n\n{refs_block}")
+    format!("{}{}", &text[..end], TRUNCATION_MARKER)
 }
 
 #[cfg(test)]
@@ -128,28 +126,43 @@ mod tests {
     }
 
     #[test]
-    fn preserving_refs_keeps_block_intact_when_body_truncated() {
-        let refs_block = "References:\n[1] https://example.com/a\n[2] https://example.com/b";
-        let body = "word ".repeat(500); // far over budget
-        let content = format!("{}\n\n{}", body.trim_end(), refs_block);
-        let out = truncate_preserving_refs(&content, refs_block, 80);
-        assert!(out.contains("…[truncated]"), "out: {out}");
-        // The full reference block survives at the very end.
-        assert!(out.ends_with(refs_block), "out tail: {:?}", out);
+    fn truncate_respects_the_budget_it_reports() {
+        let text = "a".repeat(1000);
+        let out = truncate_to_tokens(&text, 20);
+        assert!(out.ends_with(TRUNCATION_MARKER));
+        assert!(
+            estimate_tokens(&out) <= 20,
+            "estimate {}",
+            estimate_tokens(&out)
+        );
+    }
+
+    /// The old `max_tokens * 4` character cut ignored the URL surcharge, so
+    /// punctuation-dense text came back well over budget.
+    #[test]
+    fn truncate_respects_budget_on_url_heavy_text() {
+        let urls = "[1] https://example.com/a/b?c=d#e\n".repeat(200);
+        let out = truncate_to_tokens(&urls, 50);
+        assert!(
+            estimate_tokens(&out) <= 50,
+            "estimate {}",
+            estimate_tokens(&out)
+        );
     }
 
     #[test]
-    fn preserving_refs_is_noop_when_within_budget() {
-        let refs_block = "References:\n[1] https://example.com/a";
-        let content = format!("short body\n\n{refs_block}");
-        let out = truncate_preserving_refs(&content, refs_block, 10_000);
-        assert_eq!(out, content);
+    fn truncate_is_a_noop_within_budget() {
+        let text = "short enough";
+        assert_eq!(truncate_to_tokens(text, 1000), text);
     }
 
     #[test]
-    fn preserving_refs_without_block_falls_back_to_plain_truncate() {
-        let content = "z".repeat(1000);
-        let out = truncate_preserving_refs(&content, "", 10);
-        assert_eq!(out, truncate_to_tokens(&content, 10));
+    fn truncate_never_splits_a_utf8_char() {
+        let text = "é".repeat(500);
+        let out = truncate_to_tokens(&text, 10);
+        // Round-trips as valid UTF-8 (the type system guarantees it, but the
+        // boundary walk is what makes the slice legal in the first place).
+        assert!(out.starts_with('é'));
+        assert!(estimate_tokens(&out) <= 10);
     }
 }

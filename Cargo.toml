@@ -40,6 +40,7 @@ websearch = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Optimized for a small, blazing-fast shipped binary.

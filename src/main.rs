@@ -1,16 +1,18 @@
 //! Unified CLI: a single `webtools` binary exposing `fetch`, `search`, and an
 //! `mcp` stdio server, the way `cargo`/`rg` ship one binary with many commands.
 
+mod config;
 mod mcp;
 
 use std::io::Read;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
 use webfetch::tls::TlsConfig;
-use webfetch::types::{ContentType, FetchOptions};
-use websearch::types::SearchOptions;
+use webfetch::types::{ContentType, FetchOptions, FetchResult};
+use websearch::types::{SearchOptions, SearchOutput};
 
 #[derive(Parser)]
 #[command(name = "webtools", version, about)]
@@ -36,12 +38,15 @@ enum Commands {
         /// Emit the full FetchResult as JSON.
         #[arg(long)]
         json: bool,
-        /// Soft cap on output size, in estimated tokens.
+        /// Soft cap on output size, in estimated tokens. The body is truncated
+        /// first and only the references it still cites are kept, so the whole
+        /// output stays inside the cap.
         #[arg(long)]
         max_tokens: Option<usize>,
-        /// Request timeout in seconds.
-        #[arg(long, default_value_t = 10)]
-        timeout: u64,
+        /// Timeout in seconds for each request. The whole fetch, including
+        /// redirects and retries, is bounded at three times this.
+        #[arg(long)]
+        timeout: Option<u64>,
         /// Extra PEM CA certificate file(s) to trust as additional roots
         /// (repeatable). Use behind a TLS-intercepting proxy whose root CA is
         /// not in the OS store.
@@ -53,7 +58,7 @@ enum Commands {
         #[arg(long)]
         insecure: bool,
     },
-    /// Search the web (DuckDuckGo Lite) with reference-style result URLs.
+    /// Search the web with reference-style result URLs.
     Search {
         #[arg(long)]
         query: String,
@@ -63,9 +68,13 @@ enum Commands {
         /// Emit the full SearchOutput as JSON.
         #[arg(long)]
         json: bool,
-        /// Safe search: "on" or "off" (omit to use DDG's default).
+        /// Safe search: "on" or "off" (omit to use the provider's default).
         #[arg(long)]
         safe_search: Option<String>,
+        /// Search backend: duckduckgo (default, no key) | brave | tavily |
+        /// searxng. Keys come from the environment or ~/.hoocode/settings.json.
+        #[arg(long)]
+        provider: Option<String>,
         /// Request timeout in seconds.
         #[arg(long, default_value_t = 10)]
         timeout: u64,
@@ -85,22 +94,29 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() {
-    if let Err(err) = run().await {
-        // Concise, single-line error chain for a CLI — no backtrace dump.
-        eprintln!("webtools: {err:#}");
-        std::process::exit(1);
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(code) => code,
+        Err(err) => {
+            // Concise, single-line error chain for a CLI — no backtrace dump.
+            eprintln!("webtools: {err:#}");
+            ExitCode::FAILURE
+        }
     }
 }
 
 fn read_input(from_file: &str) -> anyhow::Result<String> {
-    if from_file == "-" {
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
-        Ok(buf)
+    // Read lossily: a page in an encoding we cannot decode should come back
+    // imperfect, not refuse to run with "stream did not contain valid UTF-8".
+    let bytes = if from_file == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin().read_to_end(&mut buf)?;
+        buf
     } else {
-        Ok(std::fs::read_to_string(from_file)?)
-    }
+        std::fs::read(from_file)
+            .map_err(|e| anyhow::anyhow!("reading --from-file {from_file}: {e}"))?
+    };
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn parse_safe_search(value: Option<&str>) -> Option<bool> {
@@ -111,7 +127,49 @@ fn parse_safe_search(value: Option<&str>) -> Option<bool> {
     }
 }
 
-async fn run() -> anyhow::Result<()> {
+/// Merge `--ca-cert` with the paths configured in `settings.json`.
+fn tls_config(flag_certs: Vec<PathBuf>, insecure: bool, configured: &[PathBuf]) -> TlsConfig {
+    let mut ca_certs = configured.to_vec();
+    ca_certs.extend(flag_certs);
+    TlsConfig { ca_certs, insecure }
+}
+
+/// Print a fetch result for a human, with a diagnostic line when nothing was
+/// extracted. An empty page and a page that needs a browser used to look
+/// identical: no output, exit 0.
+fn print_fetch(result: &FetchResult) {
+    if !result.title.is_empty() {
+        println!("{}", result.title);
+    }
+    if !result.final_url.is_empty() {
+        println!("{}", result.final_url);
+    }
+    if !result.title.is_empty() || !result.final_url.is_empty() {
+        println!();
+    }
+    println!("{}", result.content);
+
+    if let Some(note) = result.status.note() {
+        eprintln!("webtools: {note}");
+    }
+    if let Some(charset) = &result.metadata.charset {
+        eprintln!(
+            "webtools: warning: page declares charset {charset}; \
+             it was decoded as UTF-8 and may be garbled"
+        );
+    }
+}
+
+fn print_search(output: &SearchOutput) {
+    let rendered = websearch::render_output(output);
+    if !rendered.is_empty() {
+        println!("{rendered}");
+    }
+}
+
+async fn run() -> anyhow::Result<ExitCode> {
+    let settings = config::load();
+
     match Cli::parse().command {
         Commands::Fetch {
             url,
@@ -123,21 +181,25 @@ async fn run() -> anyhow::Result<()> {
             ca_cert,
             insecure,
         } => {
+            let fetch_config = &settings.webtools.fetch;
             let base = url.clone().unwrap_or_default();
             let options = FetchOptions {
                 url: base.clone(),
                 content_type: ContentType::parse(&output),
-                max_tokens,
-                timeout_secs: timeout,
-                tls: TlsConfig {
-                    ca_certs: ca_cert,
-                    insecure,
-                },
+                max_tokens: max_tokens.or(fetch_config.max_tokens),
+                timeout_secs: timeout.or(fetch_config.timeout_secs).unwrap_or(10),
+                tls: tls_config(ca_cert, insecure, &fetch_config.ca_certs),
             };
 
             let result = match from_file {
                 Some(path) => {
                     // Offline: convert a local/piped body (content-type sniffed).
+                    if base.is_empty() {
+                        eprintln!(
+                            "webtools: warning: no --url, so relative links cannot be \
+                             resolved and will not appear as references"
+                        );
+                    }
                     let body = read_input(&path)?;
                     webfetch::convert_body(&body, &base, None, &options)
                 }
@@ -151,51 +213,80 @@ async fn run() -> anyhow::Result<()> {
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
+                if let Some(note) = result.status.note() {
+                    eprintln!("webtools: {note}");
+                }
             } else {
-                // A compact citation header in front of human-readable output.
-                if !result.title.is_empty() {
-                    println!("{}", result.title);
-                }
-                if !result.final_url.is_empty() {
-                    println!("{}", result.final_url);
-                }
-                if !result.title.is_empty() || !result.final_url.is_empty() {
-                    println!();
-                }
-                println!("{}", result.content);
+                print_fetch(&result);
             }
+            // The request succeeded even when extraction found nothing, so the
+            // exit code stays 0; `status` and the stderr note carry the detail.
+            Ok(ExitCode::SUCCESS)
         }
         Commands::Search {
             query,
             max_results,
             json,
             safe_search,
+            provider,
             timeout,
             ca_cert,
             insecure,
         } => {
+            let search_config = &settings.webtools.search;
+            let primary = search_config.resolve_primary(provider.as_deref())?;
+            let fallback = search_config.resolve_fallback(&primary);
+
             let options = SearchOptions {
                 query,
                 max_results: Some(max_results),
                 safe_search: parse_safe_search(safe_search.as_deref()),
                 timeout_secs: timeout,
-                tls: TlsConfig {
-                    ca_certs: ca_cert,
-                    insecure,
-                },
+                tls: tls_config(ca_cert, insecure, &settings.webtools.fetch.ca_certs),
+                provider: primary,
+                fallback,
             };
             let output = websearch::run_search(options).await?;
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                println!("{}", websearch::format_results(&output.results));
-                let refs = websearch::render_references(&output.references);
-                if !refs.is_empty() {
-                    println!("\n{refs}");
-                }
+                print_search(&output);
             }
+
+            // A blocked search did not answer the question. Exiting 0 here is
+            // what made a rate-limited search look like an empty one.
+            Ok(if output.status.is_failure() {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            })
         }
-        Commands::Mcp => mcp::serve().await?,
+        Commands::Mcp => {
+            mcp::serve(settings).await?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
-    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_search_accepts_both_spellings() {
+        assert_eq!(parse_safe_search(Some("on")), Some(true));
+        assert_eq!(parse_safe_search(Some("STRICT")), Some(true));
+        assert_eq!(parse_safe_search(Some("off")), Some(false));
+        assert_eq!(parse_safe_search(None), None);
+        assert_eq!(parse_safe_search(Some("maybe")), None);
+    }
+
+    #[test]
+    fn ca_certs_from_flags_and_config_are_merged() {
+        let configured = vec![PathBuf::from("/etc/ssl/corp.pem")];
+        let tls = tls_config(vec![PathBuf::from("/tmp/extra.pem")], false, &configured);
+        assert_eq!(tls.ca_certs.len(), 2);
+        assert!(!tls.insecure);
+    }
 }

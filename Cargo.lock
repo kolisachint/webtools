@@ -1895,6 +1895,7 @@ version = "0.1.16"
 dependencies = [
  "anyhow",
  "clap",
+ "serde",
  "serde_json",
  "tokio",
  "webtools-fetch",
@@ -1919,6 +1920,7 @@ version = "0.1.16"
 dependencies = [
  "anyhow",
  "ego-tree",
+ "once_cell",
  "reqwest",
  "scraper",
  "serde",
@@ -1933,6 +1935,7 @@ name = "webtools-search"
 version = "0.1.16"
 dependencies = [
  "anyhow",
+ "once_cell",
  "reqwest",
  "scraper",
  "serde",
