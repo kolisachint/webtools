@@ -1,0 +1,127 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1b42220..14b80a9 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -20,6 +20,40 @@ jobs:
+       - name: Format
+         run: cargo fmt --all --check
+       - name: Clippy
+-        run: cargo clippy --workspace --all-targets -- -D warnings
++        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+       - name: Test
+-        run: cargo test --workspace
++        run: cargo test --workspace --locked
++
++  # Releases ship macOS and Windows binaries, so a platform-specific break has
++  # to fail here rather than at release time. Compile-only: the test suite is
++  # platform-independent and already runs above.
++  cross-compile:
++    name: Check ${{ matrix.os }}
++    strategy:
++      fail-fast: false
++      matrix:
++        os: [macos-latest, windows-latest]
++    runs-on: ${{ matrix.os }}
++    steps:
++      - uses: actions/checkout@v4
++      - uses: dtolnay/rust-toolchain@stable
++      - uses: Swatinem/rust-cache@v2
++      - run: cargo check --workspace --all-targets --locked
++
++  # The libraries are published to crates.io, so the declared `rust-version`
++  # has to be one they actually build on.
++  msrv:
++    name: Minimum supported Rust version
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - name: Read rust-version from the manifest
++        id: msrv
++        run: |
++          version=$(grep -m1 '^rust-version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
++          echo "version=$version" >> "$GITHUB_OUTPUT"
++      - uses: dtolnay/rust-toolchain@master
++        with:
++          toolchain: ${{ steps.msrv.outputs.version }}
++      - uses: Swatinem/rust-cache@v2
++      - run: cargo check --workspace --locked
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 7529b57..fd8cc12 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -47,7 +47,13 @@ jobs:
+       - name: Bump version in Cargo.toml
+         id: bump
+         run: |
+-          CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
++          # The latest v* tag is the source of truth, not the manifest: a PR
++          # that edits `version` by hand would otherwise shift the sequence and
++          # skip a number.
++          CURRENT_VERSION=$(git tag --list 'v*' --sort=-v:refname | head -n1 | sed 's/^v//')
++          if [ -z "$CURRENT_VERSION" ]; then
++            CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
++          fi
+           echo "Current version: $CURRENT_VERSION"
+ 
+           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+@@ -73,10 +79,30 @@ jobs:
+           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+           echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
+ 
++      - name: Stamp the changelog
++        run: |
++          # CHANGELOG.md documents that entries land under Unreleased and are
++          # stamped by this workflow. Nothing did the stamping, so shipped
++          # features sat under Unreleased release after release.
++          VERSION="${{ steps.bump.outputs.version }}"
++          TODAY=$(date -u +%Y-%m-%d)
++          if grep -q '^## \[Unreleased\]' CHANGELOG.md; then
++            awk -v version="$VERSION" -v today="$TODAY" '
++              /^## \[Unreleased\]/ && !done {
++                print "## [Unreleased]"
++                print ""
++                print "## [" version "] - " today
++                done = 1
++                next
++              }
++              { print }
++            ' CHANGELOG.md > CHANGELOG.tmp && mv CHANGELOG.tmp CHANGELOG.md
++          fi
++
+       - name: Commit and tag
+         run: |
+           VERSION="${{ steps.bump.outputs.version }}"
+-          git add Cargo.toml Cargo.lock crates/*/Cargo.toml
++          git add Cargo.toml Cargo.lock crates/*/Cargo.toml CHANGELOG.md
+           git commit -m "release: v${VERSION}"
+           git tag -a "v${VERSION}" -m "release: v${VERSION}"
+ 
+@@ -91,7 +117,9 @@ jobs:
+     steps:
+       - uses: actions/checkout@v4
+         with:
+-          ref: main
++          # The tag, not `main`: another PR can merge between jobs, and
++          # publishing a later commit under this version would be wrong.
++          ref: ${{ needs.bump-and-tag.outputs.tag }}
+       - uses: dtolnay/rust-toolchain@stable
+       - name: Publish crates (in dependency order)
+         env:
+@@ -123,7 +151,7 @@ jobs:
+     steps:
+       - uses: actions/checkout@v4
+         with:
+-          ref: main
++          ref: ${{ needs.bump-and-tag.outputs.tag }}
+       - name: Create release
+         env:
+           GH_TOKEN: ${{ github.token }}
+@@ -161,7 +189,7 @@ jobs:
+     steps:
+       - uses: actions/checkout@v4
+         with:
+-          ref: main
++          ref: ${{ needs.bump-and-tag.outputs.tag }}
+       - name: Build and upload
+         uses: taiki-e/upload-rust-binary-action@v1
+         with:

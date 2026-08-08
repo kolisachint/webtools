@@ -3,6 +3,16 @@
 The GitHub Actions workflows live in `.github/workflows/` (`ci.yml` and
 `release.yml`). There is no manual activation step.
 
+> **Pending: `workflow-updates.patch`.** This document already describes the
+> workflow behaviour the patch introduces, but the files themselves are not
+> updated yet — the session that wrote it had no `workflow` OAuth scope, and
+> GitHub refuses such a push. Apply it with a token that has the scope, then
+> delete the file:
+>
+> ```bash
+> git apply ci/workflow-updates.patch && git rm ci/workflow-updates.patch
+> ```
+
 ## Workflow details
 
 ### `ci.yml`
