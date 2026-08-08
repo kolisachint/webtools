@@ -351,8 +351,10 @@ a stderr warning so the cause is visible rather than a mystery.
    networks): the proxy presents a certificate signed by an organization root
    CA that lives in the OS store. Install that root CA in the OS store and
    `webtools` will trust it — no flags needed.
-2. **The bundled webpki roots**, used only as a fallback when the OS store
-   yields no usable certificates.
+2. **The bundled webpki roots**, always — not only when the OS store is empty.
+   A partial system store (common on slim container images) would otherwise
+   replace a complete root set with an incomplete one and fail to verify most
+   of the public web.
 3. **`SSL_CERT_FILE`**, if set and readable: its PEM certificates are loaded as
    additional trust anchors (an unreadable value prints a warning and is
    skipped).

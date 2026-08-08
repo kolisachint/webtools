@@ -79,8 +79,8 @@ lockstep semantic versioning across all crates.
 
 ### Changed
 
-- The MCP server handles requests concurrently; one slow fetch previously
-  blocked every other call on the connection.
+- The MCP server handles requests concurrently, up to eight calls at a time;
+  one slow fetch previously blocked every other call on the connection.
 - MCP tool results are rendered text by default rather than a pretty-printed
   `FetchResult` with escaped newlines and a duplicated reference list. Pass
   `json: true` for the full structure.
@@ -96,6 +96,12 @@ lockstep semantic versioning across all crates.
 
 ### Security
 
+- The bundled webpki roots are now always trusted alongside the OS store, not
+  only when the OS store comes back empty. A *partial* system store — a slim
+  container image with a handful of certificates — previously replaced a
+  complete root set with an incomplete one and could not verify most of the
+  public web. (v0.1.14 described the trust as additive; the code made webpki a
+  fallback.)
 - The SSRF guard refuses ports that never speak HTTP (ssh, smtp, mysql, redis
   and the rest of the list browsers refuse). HTTP on 8080, 3000 or 8443 is
   unaffected.
@@ -138,8 +144,7 @@ lockstep semantic versioning across all crates.
 - TLS trust now uses the operating system certificate store (via
   `rustls-native-certs`) in addition to the bundled webpki roots, so requests
   succeed behind TLS-intercepting proxies whose organization root CA lives in
-  the OS store. The bundled webpki roots remain as a fallback when the OS store
-  yields no usable certificates.
+  the OS store. The bundled webpki roots remain trusted as well.
 - `SSL_CERT_FILE` is honored: when set and readable, its PEM certificates are
   loaded as additional trust anchors (an unreadable value warns and is skipped).
 - `fetch` and `search` gained `--ca-cert <PATH>` (repeatable) to add extra PEM

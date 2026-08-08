@@ -274,9 +274,14 @@ fn is_empty_structured(content: &str) -> bool {
 
 /// Does the raw document carry scripts? A shell with scripts and no text is a
 /// client-rendered page, not an empty one.
+///
+/// Scans in place rather than lowercasing the whole body: this runs on bodies
+/// of up to the 5 MiB cap, and allocating a second copy of one to answer a
+/// yes/no question is not worth it.
 fn has_scripts(raw: &str) -> bool {
-    let lower = raw.to_ascii_lowercase();
-    lower.contains("<script")
+    raw.as_bytes()
+        .windows(7)
+        .any(|w| w.eq_ignore_ascii_case(b"<script"))
 }
 
 /// Report a declared charset this build cannot decode.
@@ -333,6 +338,11 @@ pub async fn fetch_and_convert(options: FetchOptions) -> anyhow::Result<FetchRes
     // were both set to the post-redirect URL, which discarded the request.
     result.source = options.url;
     result.final_url = page.final_url;
+    // The fetch layer knows what it actually decoded with, including the
+    // `<meta charset>` fallback, so its verdict wins over re-deriving one here.
+    if page.undecodable_charset.is_some() {
+        result.metadata.charset = page.undecodable_charset;
+    }
     Ok(result)
 }
 

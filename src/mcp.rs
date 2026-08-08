@@ -15,7 +15,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
+use tokio::task::JoinSet;
 
 use webfetch::types::{ContentStatus, ContentType, FetchOptions};
 use websearch::types::SearchOptions;
@@ -41,6 +42,11 @@ const DEFAULT_MCP_MAX_TOKENS: usize = 6_000;
 /// bound, a peer can make the server allocate without limit.
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
+/// How many tool calls may be in flight at once. Concurrency is the point —
+/// one slow fetch must not stall the rest — but unbounded concurrency lets a
+/// peer open as many sockets as it can write lines.
+const MAX_CONCURRENT_CALLS: usize = 8;
+
 pub async fn serve(config: Config) -> Result<()> {
     let config = Arc::new(config);
     let stdin = tokio::io::stdin();
@@ -62,8 +68,18 @@ pub async fn serve(config: Config) -> Result<()> {
         }
     });
 
-    let mut tasks = Vec::new();
+    // A `JoinSet` rather than a `Vec` of handles: finished tasks are reaped as
+    // we go, so a long-lived server does not accumulate one entry per request
+    // it has ever answered.
+    let mut tasks = JoinSet::new();
+    // Concurrency is bounded so a peer cannot make the server open an unlimited
+    // number of simultaneous connections just by writing lines quickly.
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CALLS));
+
     while let Some(line) = lines.next_line().await? {
+        // Reap anything that finished while we were blocked on stdin.
+        while tasks.try_join_next().is_some() {}
+
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -87,7 +103,10 @@ pub async fn serve(config: Config) -> Result<()> {
 
         let tx = tx.clone();
         let config = Arc::clone(&config);
-        tasks.push(tokio::spawn(async move {
+        let permits = Arc::clone(&permits);
+        tasks.spawn(async move {
+            // Held for the duration of the call; dropped with the task.
+            let _permit = permits.acquire_owned().await;
             let response = match method.as_str() {
                 "initialize" => ok(id, initialize_result(&msg)),
                 "tools/list" => ok(id, tools_list()),
@@ -99,13 +118,11 @@ pub async fn serve(config: Config) -> Result<()> {
                 _ => err(id, -32601, "method not found"),
             };
             let _ = tx.send(response).await;
-        }));
+        });
     }
 
     // stdin closed: let in-flight calls finish, then close the writer.
-    for task in tasks {
-        let _ = task.await;
-    }
+    while tasks.join_next().await.is_some() {}
     drop(tx);
     let _ = writer.await;
     Ok(())
