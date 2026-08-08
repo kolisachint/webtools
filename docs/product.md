@@ -285,9 +285,13 @@ environment.
 
 `fetch` is reachable from the CLI and the MCP server, so a crafted or
 prompt-injected URL could try to reach internal services. Before connecting,
-the guard rejects non-`http(s)` schemes and any host that resolves to a
-non-public IP (loopback, private ranges, link-local incl. the cloud metadata
-endpoint `169.254.169.254`, CGNAT, ULA, …). The resolved public addresses are
+the guard rejects non-`http(s)` schemes, ports that never speak HTTP (ssh,
+smtp, mysql, redis and friends — the same list browsers refuse), and any host
+that resolves to a non-public IP (loopback, private ranges, link-local incl. the
+cloud metadata endpoint `169.254.169.254`, CGNAT, ULA, …). IPv6 transition
+addresses that embed an IPv4 one — NAT64 `64:ff9b::/96`, 6to4 `2002::/16` — are
+classified by the address they carry, since they are otherwise a way to write
+`169.254.169.254` without writing it down. The resolved public addresses are
 **pinned** for the connection, closing the DNS-rebinding window between
 validation and connect. Redirects are followed manually so **every hop is
 re-validated and re-pinned**, not just the initial host. The response body is
@@ -324,6 +328,19 @@ service:
 
 `--timeout` bounds each request; the whole fetch, across redirects and retries,
 is bounded at three times that.
+
+### Character encodings
+
+Bodies are decoded with the charset the response declares, read from
+`Content-Type` and falling back to `<meta charset>`. UTF-8 and the
+single-byte Western family (`windows-1252`, `ISO-8859-1`/`latin1`, which
+browsers treat as windows-1252 anyway) are decoded exactly.
+
+Multi-byte legacy encodings — Shift_JIS, GBK, Big5, EUC-KR — are not. Decoding
+them needs real conversion tables, which would add roughly a megabyte to a
+binary whose whole pitch is being small. Those pages are read as UTF-8, which
+garbles them, and the declared charset is reported on `metadata.charset` and as
+a stderr warning so the cause is visible rather than a mystery.
 
 ## TLS, proxies, and custom CAs
 
@@ -403,6 +420,7 @@ src/
 crates/
 ├── core/               webfetch-core: primitives shared by both tools
 │   └── src/
+│       ├── charset.rs    Response decoding (UTF-8, windows-1252 family)
 │       ├── compress.rs   Whitespace/decorative reduction + token estimation
 │       ├── refs.rs       Referable trait, reference block, budget fitting
 │       ├── http.rs       Shared user agent, body cap, retry classification

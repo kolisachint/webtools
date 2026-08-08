@@ -43,8 +43,14 @@ lockstep semantic versioning across all crates.
   fetch running for minutes; the whole fetch is now bounded at three times it.
 - The `javascript:` and `mailto:` links the text path drops were still emitted
   as live links by the markdown path.
-- `--from-file` failed outright on a non-UTF-8 file; it now reads lossily, and a
-  page declaring a non-UTF-8 charset is reported rather than silently mangled.
+- **Non-UTF-8 pages came back as replacement characters.** Bodies are now
+  decoded with the charset the response declares (`Content-Type`, falling back
+  to `<meta charset>`). UTF-8 and the single-byte Western family
+  (`windows-1252`, `ISO-8859-1`) are decoded exactly. Multi-byte legacy
+  encodings still are not — the conversion tables would add roughly a megabyte
+  to the binary — but the charset is reported on `metadata.charset` and warned
+  about, so the cause is visible.
+- `--from-file` failed outright on a non-UTF-8 file; it now reads lossily.
 - `WEBFETCH_ALLOW_PRIVATE` disabled the URL scheme check along with the address
   check. It now relaxes which hosts are reachable and nothing else.
 - The search path read response bodies without any size cap, unlike fetch.
@@ -90,9 +96,27 @@ lockstep semantic versioning across all crates.
 
 ### Security
 
+- The SSRF guard refuses ports that never speak HTTP (ssh, smtp, mysql, redis
+  and the rest of the list browsers refuse). HTTP on 8080, 3000 or 8443 is
+  unaffected.
+- IPv6 transition addresses that embed an IPv4 one — NAT64 `64:ff9b::/96` and
+  6to4 `2002::/16` — are classified by the address they carry. They were a way
+  to name `169.254.169.254` without writing it down.
 - Documented that IP pinning does not apply behind an HTTP proxy: the proxy
   resolves the host itself, so the DNS-rebinding protection depends on
   connecting directly.
+
+### Tests
+
+- The HTTP path has coverage for the first time, against a local socket:
+  transient retries, non-retry of client errors, redirect following and
+  re-validation, the redirect cap, the body cap, charset decoding, provenance
+  across a redirect, and the total deadline.
+- CLI integration tests for the offline fetch path, the token budget, every
+  output format, status reporting, the config file and its precedence, and exit
+  codes.
+- The MCP server's concurrency is verified by timing: three 900 ms fetches
+  complete in about one, where the old sequential loop would take three.
 
 ## [0.1.16] - 2026-06-26
 

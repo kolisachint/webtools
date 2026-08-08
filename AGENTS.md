@@ -21,14 +21,18 @@ Code:
 - `src/mcp.rs` — MCP stdio server (JSON-RPC over stdin/stdout)
 - `crates/core` (`webfetch-core`) — shared primitives: `compress.rs`
   (whitespace/token estimation), `refs.rs` (reference rendering + budget
-  fitting), `http.rs` (user agent, body cap, retry classification), `tls.rs`
+  fitting), `http.rs` (user agent, body cap, retry classification),
+  `charset.rs` (response decoding), `tls.rs`
 - `crates/webfetch` (`webfetch`) — fetch + convert library: `fetch.rs`,
   `guard.rs` (SSRF), `limits.rs` (nesting bound), `media.rs`, `extract.rs`,
   `types.rs`, `convert/` (text | markdown | structured)
 - `crates/websearch` (`websearch`) — search: `lib.rs`, `providers/`
   (duckduckgo | brave | tavily | searxng), `extract.rs`, `types.rs`
 - `examples/latency.rs` — offline latency benchmark
-- `tests/mcp.rs` — MCP stdio integration test
+- `tests/cli.rs` — CLI integration tests (offline fetch, budget, config, exits)
+- `tests/mcp.rs` — MCP stdio integration tests (incl. concurrency)
+- `crates/webfetch/tests/fetch_net.rs` — HTTP path against a local socket:
+  retries, redirect re-validation, body cap, charset, deadline
 - `.github/workflows/` — `ci.yml`, `release.yml`
 - `.agents/commands/` — slash-command definitions (`pr.md`)
 

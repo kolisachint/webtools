@@ -78,6 +78,16 @@ fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
         return is_blocked_ipv4(v4);
     }
     let seg = ip.segments();
+
+    // Transition mechanisms embed an IPv4 address inside an IPv6 one, which is
+    // a way to name 169.254.169.254 without writing it down. Classify by the
+    // address they carry.
+    if let Some(v4) = embedded_ipv4(ip) {
+        if is_blocked_ipv4(v4) {
+            return true;
+        }
+    }
+
     ip.is_loopback()
         || ip.is_unspecified()
         || ip.is_multicast()
@@ -85,6 +95,56 @@ fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
         || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique local (ULA)
         || (seg[0] == 0x2001 && seg[1] == 0x0db8) // 2001:db8::/32 documentation
 }
+
+/// Pull the IPv4 address out of a transition-mechanism IPv6 address.
+///
+/// - `64:ff9b::/96` and `64:ff9b:1::/48` — NAT64, which forwards to the
+///   embedded IPv4 address.
+/// - `2002::/16` — 6to4, whose next two groups are the IPv4 address.
+fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let seg = ip.segments();
+    let from = |hi: u16, lo: u16| Some(Ipv4Addr::from(((hi as u32) << 16) | lo as u32));
+
+    // NAT64 well-known prefix: 64:ff9b:: with the IPv4 in the last 32 bits.
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 {
+        return from(seg[6], seg[7]);
+    }
+    // 6to4: 2002:V4ADDR::/48.
+    if seg[0] == 0x2002 {
+        return from(seg[1], seg[2]);
+    }
+    None
+}
+
+/// Ports that are never an HTTP service, and that an SSRF probe would love to
+/// reach: mail, shells, and databases on an otherwise public host.
+///
+/// This mirrors what browsers refuse. It is a blocklist rather than an
+/// allowlist because HTTP legitimately runs on all sorts of ports (8080, 3000,
+/// 8443) and refusing those would break ordinary use.
+const BLOCKED_PORTS: [u16; 21] = [
+    22,    // ssh
+    23,    // telnet
+    25,    // smtp
+    53,    // dns
+    69,    // tftp
+    110,   // pop3
+    119,   // nntp
+    135,   // msrpc
+    137,   // netbios
+    139,   // netbios
+    143,   // imap
+    445,   // smb
+    465,   // smtps
+    587,   // smtp submission
+    993,   // imaps
+    995,   // pop3s
+    1433,  // mssql
+    3306,  // mysql
+    5432,  // postgres
+    6379,  // redis
+    11211, // memcached
+];
 
 /// An error describing why a URL was rejected by the guard.
 #[derive(Debug)]
@@ -98,15 +158,6 @@ impl std::fmt::Display for BlockedUrl {
 
 impl std::error::Error for BlockedUrl {}
 
-/// Validate a URL's scheme and resolve+classify its host. On success returns
-/// the validated socket addresses (host resolved to public IPs) so the caller
-/// can pin the connection and avoid a DNS-rebinding TOCTOU window.
-///
-/// A no-op (returns `Ok(vec![])`) when the guard is disabled via env.
-///
-/// Async because domain validation resolves DNS via [`tokio::net::lookup_host`]
-/// rather than the blocking `std` resolver — important on the async fetch path
-/// (and the concurrent MCP server) so a slow lookup never blocks a tokio worker.
 /// Only `http(s)` is fetchable. Checked before the env opt-out is consulted:
 /// `WEBFETCH_ALLOW_PRIVATE` exists to reach internal *hosts*, not to turn an
 /// HTTP client into a file reader.
@@ -117,8 +168,30 @@ fn check_scheme(url: &Url) -> Result<(), BlockedUrl> {
     }
 }
 
+/// Refuse ports that never speak HTTP. See [`BLOCKED_PORTS`].
+fn check_port(url: &Url) -> Result<(), BlockedUrl> {
+    match url.port() {
+        Some(port) if BLOCKED_PORTS.contains(&port) => Err(BlockedUrl(format!(
+            "port {port} is not an HTTP service and is not fetchable"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Validate a URL's scheme, port and host, resolving and classifying the host.
+/// On success returns the validated socket addresses (host resolved to public
+/// IPs) so the caller can pin the connection and avoid a DNS-rebinding TOCTOU
+/// window.
+///
+/// Host classification is skipped when the guard is disabled via env; the
+/// scheme and port checks always run.
+///
+/// Async because domain validation resolves DNS via [`tokio::net::lookup_host`]
+/// rather than the blocking `std` resolver — important on the async fetch path
+/// (and the concurrent MCP server) so a slow lookup never blocks a tokio worker.
 pub async fn validate_url(url: &Url) -> Result<Vec<std::net::SocketAddr>, BlockedUrl> {
     check_scheme(url)?;
+    check_port(url)?;
 
     if allow_private() {
         return Ok(Vec::new());
@@ -215,6 +288,49 @@ mod tests {
         assert!(!blocked("8.8.8.8"));
         assert!(!blocked("93.184.216.34")); // example.com
         assert!(!blocked("2606:4700:4700::1111")); // cloudflare v6
+    }
+
+    /// Transition mechanisms are another way to spell an IPv4 address, so they
+    /// are another way to spell the metadata endpoint.
+    #[test]
+    fn blocks_ipv4_embedded_in_transition_addresses() {
+        assert!(blocked("64:ff9b::169.254.169.254")); // NAT64
+        assert!(blocked("64:ff9b::a00:1")); // NAT64 → 10.0.0.1
+        assert!(blocked("2002:a9fe:a9fe::1")); // 6to4 → 169.254.169.254
+        assert!(blocked("2002:7f00:1::1")); // 6to4 → 127.0.0.1
+                                            // The same mechanisms pointing at public space stay allowed.
+        assert!(!blocked("64:ff9b::8.8.8.8"));
+        assert!(!blocked("2002:0808:0808::1")); // 6to4 → 8.8.8.8
+    }
+
+    #[tokio::test]
+    async fn rejects_non_http_ports() {
+        for target in [
+            "http://example.com:22/",
+            "http://example.com:6379/",
+            "https://example.com:3306/",
+            "http://example.com:25/",
+        ] {
+            let url = Url::parse(target).unwrap();
+            assert!(
+                validate_url(&url).await.is_err(),
+                "{target} should be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_ordinary_http_ports() {
+        // HTTP runs on all sorts of ports; only the never-HTTP ones are refused.
+        for target in [
+            "http://example.com/",
+            "https://example.com/",
+            "http://example.com:8080/",
+            "http://example.com:3000/",
+            "https://example.com:8443/",
+        ] {
+            assert!(check_port(&Url::parse(target).unwrap()).is_ok(), "{target}");
+        }
     }
 
     #[tokio::test]

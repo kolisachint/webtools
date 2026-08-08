@@ -8,7 +8,7 @@
 // Shared primitives live in webfetch-core; re-export them so both this
 // crate's internal modules (via `crate::compress` / `crate::refs`) and
 // external callers keep a stable path.
-pub use webfetch_core::{compress, http, refs, tls};
+pub use webfetch_core::{charset, compress, http, refs, tls};
 
 pub mod convert;
 pub mod extract;
@@ -137,7 +137,7 @@ fn convert_html_body(
     let doc = Html::parse_document(body);
     let title = extract::extract_title(&doc);
     let mut metadata = extract::extract_metadata(&doc);
-    metadata.charset = non_utf8_charset(content_type_header, &doc);
+    metadata.charset = undecodable_charset(content_type_header, &doc);
 
     let converted = convert::convert_parsed(&doc, source_url, options.content_type);
     // Drop a leading body line that merely repeats the title (common when the
@@ -279,33 +279,24 @@ fn has_scripts(raw: &str) -> bool {
     lower.contains("<script")
 }
 
-/// Report the document's declared charset when it is not UTF-8.
+/// Report a declared charset this build cannot decode.
 ///
-/// Bodies are decoded as UTF-8 (lossily), so a non-UTF-8 page comes back
-/// garbled. Rather than pull in a full encoding library — this binary is
-/// deliberately small — the charset is surfaced on the result so a caller can
-/// see why the text looks wrong instead of guessing.
-fn non_utf8_charset(header: Option<&str>, doc: &Html) -> Option<String> {
-    let declared = header
-        .and_then(|h| {
-            h.split(';')
-                .filter_map(|p| p.trim().strip_prefix("charset="))
-                .next()
-                .map(|c| c.trim_matches('"').to_string())
-        })
-        .or_else(|| {
-            let sel = Selector::parse("meta[charset]").ok()?;
-            doc.select(&sel)
-                .next()
-                .and_then(|el| el.value().attr("charset"))
-                .map(|c| c.to_string())
-        })?;
+/// The network path decodes the body before it reaches here (see
+/// `webfetch_core::charset`), so this only fires for offline callers passing a
+/// header in directly, and only for encodings outside the UTF-8 and
+/// windows-1252 families — those are decoded exactly and never reported.
+fn undecodable_charset(header: Option<&str>, doc: &Html) -> Option<String> {
+    let declared = header.and_then(charset::from_content_type).or_else(|| {
+        let sel = Selector::parse("meta[charset]").ok()?;
+        doc.select(&sel)
+            .next()
+            .and_then(|el| el.value().attr("charset"))
+            .map(|c| c.to_string())
+    })?;
 
-    let normalized = declared.trim().to_ascii_lowercase();
-    if matches!(normalized.as_str(), "utf-8" | "utf8" | "us-ascii" | "ascii") {
-        None
-    } else {
-        Some(declared.trim().to_string())
+    match charset::classify(&declared) {
+        charset::Charset::Unsupported(name) => Some(name),
+        _ => None,
     }
 }
 
@@ -354,19 +345,21 @@ pub fn parse_content_type(s: &str) -> ContentType {
 mod tests {
     use super::*;
 
+    /// Only charsets that cannot be decoded exactly are reported; UTF-8 and the
+    /// windows-1252 family are handled, so they are not a problem to flag.
     #[test]
-    fn charset_is_reported_only_when_not_utf8() {
+    fn only_undecodable_charsets_are_reported() {
         let doc = Html::parse_document("<html></html>");
         assert_eq!(
-            non_utf8_charset(Some("text/html; charset=utf-8"), &doc),
+            undecodable_charset(Some("text/html; charset=utf-8"), &doc),
             None
         );
         assert_eq!(
-            non_utf8_charset(Some("text/html; charset=ISO-8859-1"), &doc),
-            Some("ISO-8859-1".into())
+            undecodable_charset(Some("text/html; charset=ISO-8859-1"), &doc),
+            None
         );
         let doc = Html::parse_document(r#"<html><head><meta charset="shift_jis"></head></html>"#);
-        assert_eq!(non_utf8_charset(None, &doc), Some("shift_jis".into()));
+        assert_eq!(undecodable_charset(None, &doc), Some("shift_jis".into()));
     }
 
     #[test]

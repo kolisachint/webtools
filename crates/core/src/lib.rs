@@ -5,6 +5,7 @@
 //! configuration ([`tls`]). Both leaf crates re-export these so their internal
 //! modules can keep using `crate::compress` / `crate::refs` / `crate::tls`.
 
+pub mod charset;
 pub mod compress;
 pub mod http;
 pub mod refs;

@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 
 use crate::guard;
 use crate::tls::TlsConfig;
-use webfetch_core::http::{read_body_capped, transient_send_error, transient_status, USER_AGENT};
+use webfetch_core::charset;
+use webfetch_core::http::{
+    read_body_capped_bytes, transient_send_error, transient_status, USER_AGENT,
+};
 
 const MAX_ATTEMPTS: u32 = 3;
 const MAX_REDIRECTS: usize = 5;
@@ -22,10 +25,32 @@ const TOTAL_BUDGET_MULTIPLIER: u32 = 3;
 
 /// Outcome of an HTTP fetch: the body, the URL we actually landed on after
 /// following redirects, and the response's `Content-Type` (if any).
+#[derive(Debug, Clone)]
 pub struct FetchedPage {
     pub body: String,
     pub final_url: String,
     pub content_type: Option<String>,
+    /// Set when the page declared a charset this build cannot decode, so the
+    /// body was read as UTF-8 and may be garbled.
+    pub undecodable_charset: Option<String>,
+}
+
+/// Find `<meta charset=…>` in the head of a body whose header declared nothing.
+///
+/// Only the first 2 KiB are searched: the declaration is required to appear
+/// early, and scanning a whole 5 MiB body for it would be wasted work.
+fn sniff_meta_charset(raw: &[u8]) -> Option<String> {
+    const WINDOW: usize = 2048;
+    let head = &raw[..raw.len().min(WINDOW)];
+    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
+    let at = text.find("charset")? + "charset".len();
+    let rest = text[at..].trim_start().strip_prefix('=')?.trim_start();
+    let value: String = rest
+        .trim_start_matches(['"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    (!value.is_empty()).then_some(value)
 }
 
 /// One hop's result: either the final page, or a redirect to a raw `Location`.
@@ -120,11 +145,21 @@ async fn attempt(client: &Client, url: &str) -> Result<Hop, (anyhow::Error, bool
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let body = read_body_capped(resp).await?;
+    // Decode with the response's declared charset rather than assuming UTF-8:
+    // a windows-1252 / ISO-8859-1 page is otherwise returned full of
+    // replacement characters.
+    let raw = read_body_capped_bytes(resp).await?;
+    let declared = content_type
+        .as_deref()
+        .and_then(charset::from_content_type)
+        .or_else(|| sniff_meta_charset(&raw));
+    let (body, undecodable_charset) = charset::decode(&raw, declared.as_deref());
+
     Ok(Hop::Page(FetchedPage {
         body,
         final_url,
         content_type,
+        undecodable_charset,
     }))
 }
 

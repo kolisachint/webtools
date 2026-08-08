@@ -39,7 +39,17 @@ fn push_capped(buf: &mut Vec<u8>, chunk: &[u8], max: usize) -> bool {
 /// Read a response body, streaming chunks with a running byte cap so an
 /// oversized body is bounded before it is ever parsed. The `bool` in the error
 /// reports whether the read failure is transient (worth retrying).
-pub async fn read_body_capped(mut resp: Response) -> Result<String, (anyhow::Error, bool)> {
+///
+/// Decodes as UTF-8. Use [`read_body_capped_bytes`] when the response's declared
+/// charset matters.
+pub async fn read_body_capped(resp: Response) -> Result<String, (anyhow::Error, bool)> {
+    let bytes = read_body_capped_bytes(resp).await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// [`read_body_capped`] without the decoding step, for callers that need to
+/// apply the response's declared charset themselves.
+pub async fn read_body_capped_bytes(mut resp: Response) -> Result<Vec<u8>, (anyhow::Error, bool)> {
     let mut buf: Vec<u8> = Vec::new();
     // Honour Content-Length to pre-size, but never trust it past the cap.
     if let Some(len) = resp.content_length() {
@@ -59,7 +69,7 @@ pub async fn read_body_capped(mut resp: Response) -> Result<String, (anyhow::Err
             }
         }
     }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    Ok(buf)
 }
 
 /// Is a send/connect failure worth retrying?
