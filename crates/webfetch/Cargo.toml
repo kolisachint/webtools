@@ -2,6 +2,7 @@
 name = "webtools-fetch"
 version = "0.1.16"
 edition = "2021"
+rust-version = "1.82"
 description = "Token-efficient web content fetcher with reference-style URL preservation"
 license = "MIT"
 repository = "https://github.com/kolisachint/webtools"
@@ -23,3 +24,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 anyhow = { workspace = true }
+once_cell = { workspace = true }

@@ -10,8 +10,8 @@
 //!
 //! 1. the OS / system trust store (via `rustls-native-certs`), so org root CAs
 //!    — including proxy-injected ones — are trusted;
-//! 2. the bundled webpki roots, but only as a fallback when the OS store yields
-//!    nothing usable;
+//! 2. the bundled webpki roots, always, so a thin or partial system store
+//!    cannot leave the client unable to verify ordinary public sites;
 //! 3. any certs in `SSL_CERT_FILE`, if it is set and readable;
 //! 4. any explicit `--ca-cert` PEM bundles.
 //!
@@ -20,10 +20,28 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use anyhow::Context;
 use reqwest::{Certificate, ClientBuilder};
 use serde::Deserialize;
+
+/// The system trust anchors, in DER, loaded at most once per process.
+///
+/// [`TlsConfig::apply`] runs once per client, and the fetch path builds a fresh
+/// client for every redirect hop (to keep per-URL IP pinning), so without this
+/// cache a single redirected fetch would read and PEM-parse the whole OS
+/// certificate bundle several times over.
+fn native_root_ders() -> &'static [Vec<u8>] {
+    static ROOTS: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
+    ROOTS.get_or_init(|| {
+        let native = rustls_native_certs::load_native_certs();
+        for err in &native.errors {
+            eprintln!("webtools: warning: reading a system certificate failed: {err}");
+        }
+        native.certs.into_iter().map(|c| c.to_vec()).collect()
+    })
+}
 
 /// How an HTTP client should establish TLS trust.
 ///
@@ -44,9 +62,8 @@ impl TlsConfig {
     /// Apply the trust configuration to a `reqwest` client builder.
     ///
     /// When `insecure` is set, verification is turned off and trust-anchor
-    /// assembly is skipped. Otherwise the OS store is loaded (falling back to
-    /// webpki only when it is empty), then `SSL_CERT_FILE` and `--ca-cert`
-    /// certificates are layered on as additional roots.
+    /// assembly is skipped. Otherwise the OS store, the bundled webpki roots,
+    /// `SSL_CERT_FILE` and `--ca-cert` are all layered together as roots.
     pub fn apply(&self, builder: ClientBuilder) -> anyhow::Result<ClientBuilder> {
         if self.insecure {
             warn_insecure_once();
@@ -58,21 +75,27 @@ impl TlsConfig {
 
         // 1. OS / system trust store. This is what lets an org root CA — or one
         //    injected by a TLS-intercepting proxy — be trusted.
-        let native = rustls_native_certs::load_native_certs();
-        for err in &native.errors {
-            eprintln!("webtools: warning: reading a system certificate failed: {err}");
-        }
-        let mut native_roots = 0usize;
-        for cert in native.certs {
-            if let Ok(c) = Certificate::from_der(&cert) {
+        for cert in native_root_ders() {
+            if let Ok(c) = Certificate::from_der(cert) {
                 builder = builder.add_root_certificate(c);
-                native_roots += 1;
             }
         }
 
-        // 2. Keep the bundled webpki roots only as a fallback when the OS store
-        //    yielded nothing usable; otherwise prefer the system store.
-        builder = builder.tls_built_in_root_certs(native_roots == 0);
+        // 2. The bundled webpki roots, always — not only when the OS store came
+        //    back empty.
+        //
+        //    Treating them as a fallback meant a *partial* OS store silently
+        //    replaced a complete root set with an incomplete one: a container
+        //    with three certificates in /etc/ssl would lose webpki entirely and
+        //    fail to verify most of the web, with no signal beyond a handshake
+        //    error. Only a fully empty store triggered the fallback, which is
+        //    the one case that failure mode does not cover.
+        //
+        //    The cost is that removing a CA from the OS store does not distrust
+        //    it here, since webpki may still carry it. That is a real trade, but
+        //    a tool that stops reaching the web on a thin base image is the
+        //    worse outcome — and it is the behaviour the changelog described.
+        builder = builder.tls_built_in_root_certs(true);
 
         // 3. SSL_CERT_FILE — a common override in corp/proxy environments.
         //    `load_native_certs` already consults it, but we read it explicitly

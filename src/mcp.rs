@@ -4,56 +4,127 @@
 //! transport — and exposes two tools, `fetch` and `search`, so any MCP-aware
 //! LLM can call them natively without shell glue. Implemented directly (no SDK
 //! dependency) to keep the binary small.
+//!
+//! Requests are handled concurrently: each one runs as its own task and replies
+//! are serialized through a single writer. The previous loop awaited each tool
+//! call before reading the next line, so one slow fetch stalled every other
+//! request on the connection.
+
+use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{mpsc, Semaphore};
+use tokio::task::JoinSet;
 
-use webfetch::types::{ContentType, FetchOptions};
+use webfetch::types::{ContentStatus, ContentType, FetchOptions};
 use websearch::types::SearchOptions;
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
+use crate::config::Config;
 
-pub async fn serve() -> Result<()> {
+/// The protocol version this server implements. A client asking for a different
+/// one is answered with its own version when we can speak it; see [`negotiate`].
+const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// Protocol revisions this server is compatible with. The wire format it uses —
+/// JSON-RPC framing, `tools/list`, `tools/call` — is unchanged across these.
+const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
+
+/// Default token cap for MCP `fetch` calls.
+///
+/// The CLI can afford an unbounded page — a terminal scrolls. An MCP result
+/// goes straight into a model's context, so a large page silently costs the
+/// caller its context window. Callers that want more can pass `max_tokens`.
+const DEFAULT_MCP_MAX_TOKENS: usize = 6_000;
+
+/// Maximum length of a single JSON-RPC line we will buffer (8 MiB). Without a
+/// bound, a peer can make the server allocate without limit.
+const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+
+/// How many tool calls may be in flight at once. Concurrency is the point —
+/// one slow fetch must not stall the rest — but unbounded concurrency lets a
+/// peer open as many sockets as it can write lines.
+const MAX_CONCURRENT_CALLS: usize = 8;
+
+pub async fn serve(config: Config) -> Result<()> {
+    let config = Arc::new(config);
     let stdin = tokio::io::stdin();
-    let mut lines = BufReader::new(stdin).lines();
-    let mut stdout = tokio::io::stdout();
+    let mut lines = BufReader::with_capacity(64 * 1024, stdin).lines();
+
+    // One writer task owns stdout, so concurrent handlers cannot interleave
+    // halves of two JSON frames on the same line.
+    let (tx, mut rx) = mpsc::channel::<Value>(64);
+    let writer = tokio::spawn(async move {
+        let mut stdout = tokio::io::stdout();
+        while let Some(message) = rx.recv().await {
+            let Ok(mut bytes) = serde_json::to_vec(&message) else {
+                continue;
+            };
+            bytes.push(b'\n');
+            if stdout.write_all(&bytes).await.is_err() || stdout.flush().await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // A `JoinSet` rather than a `Vec` of handles: finished tasks are reaped as
+    // we go, so a long-lived server does not accumulate one entry per request
+    // it has ever answered.
+    let mut tasks = JoinSet::new();
+    // Concurrency is bounded so a peer cannot make the server open an unlimited
+    // number of simultaneous connections just by writing lines quickly.
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CALLS));
 
     while let Some(line) = lines.next_line().await? {
+        // Reap anything that finished while we were blocked on stdin.
+        while tasks.try_join_next().is_some() {}
+
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let msg: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue, // ignore malformed frames
+        if line.len() > MAX_LINE_BYTES {
+            continue;
+        }
+        let Ok(msg) = serde_json::from_str::<Value>(line) else {
+            continue; // ignore malformed frames
         };
 
         // No "id" means a notification — act on it, but never reply.
-        let id = msg.get("id").cloned();
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
-
-        if id.is_none() {
+        let Some(id) = msg.get("id").cloned() else {
             continue;
-        }
-        let id = id.unwrap();
-
-        let response = match method {
-            "initialize" => ok(id, initialize_result()),
-            "tools/list" => ok(id, tools_list()),
-            "tools/call" => match handle_tool_call(&msg).await {
-                Ok(result) => ok(id, result),
-                Err(e) => ok(id, tool_error(&format!("{e:#}"))),
-            },
-            "ping" => ok(id, json!({})),
-            _ => err(id, -32601, "method not found"),
         };
+        let method = msg
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
 
-        let mut bytes = serde_json::to_vec(&response)?;
-        bytes.push(b'\n');
-        stdout.write_all(&bytes).await?;
-        stdout.flush().await?;
+        let tx = tx.clone();
+        let config = Arc::clone(&config);
+        let permits = Arc::clone(&permits);
+        tasks.spawn(async move {
+            // Held for the duration of the call; dropped with the task.
+            let _permit = permits.acquire_owned().await;
+            let response = match method.as_str() {
+                "initialize" => ok(id, initialize_result(&msg)),
+                "tools/list" => ok(id, tools_list()),
+                "tools/call" => match handle_tool_call(&msg, &config).await {
+                    Ok(result) => ok(id, result),
+                    Err(e) => ok(id, tool_error(&format!("{e:#}"))),
+                },
+                "ping" => ok(id, json!({})),
+                _ => err(id, -32601, "method not found"),
+            };
+            let _ = tx.send(response).await;
+        });
     }
+
+    // stdin closed: let in-flight calls finish, then close the writer.
+    while tasks.join_next().await.is_some() {}
+    drop(tx);
+    let _ = writer.await;
     Ok(())
 }
 
@@ -65,9 +136,27 @@ fn err(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-fn initialize_result() -> Value {
+/// Answer with the client's protocol version when we speak it, so a newer
+/// client is not told to downgrade for no reason.
+fn negotiate(requested: Option<&str>) -> &str {
+    match requested {
+        Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => {
+            SUPPORTED_PROTOCOL_VERSIONS[SUPPORTED_PROTOCOL_VERSIONS
+                .iter()
+                .position(|s| *s == v)
+                .unwrap_or(0)]
+        }
+        _ => DEFAULT_PROTOCOL_VERSION,
+    }
+}
+
+fn initialize_result(msg: &Value) -> Value {
+    let requested = msg
+        .get("params")
+        .and_then(|p| p.get("protocolVersion"))
+        .and_then(Value::as_str);
     json!({
-        "protocolVersion": PROTOCOL_VERSION,
+        "protocolVersion": negotiate(requested),
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "webtools", "version": env!("CARGO_PKG_VERSION") }
     })
@@ -88,22 +177,33 @@ fn tools_list() -> Value {
                             "enum": ["text", "markdown", "structured"],
                             "description": "Output format (default text)"
                         },
-                        "max_tokens": { "type": "integer", "description": "Soft cap on output size in estimated tokens" },
-                        "timeout": { "type": "integer", "description": "Request timeout in seconds (default 10)" }
+                        "max_tokens": {
+                            "type": "integer",
+                            "description": "Cap on output size in estimated tokens (default 6000)"
+                        },
+                        "timeout": { "type": "integer", "description": "Request timeout in seconds (default 10)" },
+                        "json": {
+                            "type": "boolean",
+                            "description": "Return the full FetchResult as JSON instead of rendered text (default false)"
+                        }
                     },
                     "required": ["url"]
                 }
             },
             {
                 "name": "search",
-                "description": "Search the web (DuckDuckGo Lite) and return results with reference-style URLs. No API key required.",
+                "description": "Search the web and return results with reference-style URLs. Uses DuckDuckGo by default (no API key); a keyed provider can be configured.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Search query" },
                         "max_results": { "type": "integer", "description": "Max results (default 5)" },
                         "safe_search": { "type": "string", "enum": ["on", "off"], "description": "Safe search toggle" },
-                        "timeout": { "type": "integer", "description": "Request timeout in seconds (default 10)" }
+                        "timeout": { "type": "integer", "description": "Request timeout in seconds (default 10)" },
+                        "json": {
+                            "type": "boolean",
+                            "description": "Return the full SearchOutput as JSON instead of rendered text (default false)"
+                        }
                     },
                     "required": ["query"]
                 }
@@ -112,55 +212,93 @@ fn tools_list() -> Value {
     })
 }
 
-/// Wrap a JSON payload as a successful MCP tool result (text content).
+/// Wrap text as a successful MCP tool result.
 fn tool_text(text: String) -> Value {
     json!({ "content": [ { "type": "text", "text": text } ] })
 }
 
-fn tool_error(message: &str) -> Value {
-    json!({ "content": [ { "type": "text", "text": message } ], "isError": true })
+/// Wrap text as a failed tool result. The model needs to see that a call did
+/// not answer — a blocked search or an unextractable page is not a success.
+fn tool_failure(text: String) -> Value {
+    json!({ "content": [ { "type": "text", "text": text } ], "isError": true })
 }
 
-async fn handle_tool_call(msg: &Value) -> Result<Value> {
+fn tool_error(message: &str) -> Value {
+    tool_failure(message.to_string())
+}
+
+fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+    args.get(key).and_then(Value::as_str)
+}
+
+async fn handle_tool_call(msg: &Value, config: &Config) -> Result<Value> {
     let params = msg.get("params").cloned().unwrap_or(json!({}));
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    let as_json = args.get("json").and_then(Value::as_bool).unwrap_or(false);
 
     match name {
         "fetch" => {
-            let url = args
-                .get("url")
-                .and_then(Value::as_str)
+            let url = arg_str(&args, "url")
                 .ok_or_else(|| anyhow::anyhow!("missing required argument: url"))?
                 .to_string();
+            let fetch_config = &config.webtools.fetch;
             let options = FetchOptions {
                 url,
-                content_type: ContentType::parse(
-                    args.get("output").and_then(Value::as_str).unwrap_or("text"),
+                content_type: ContentType::parse(arg_str(&args, "output").unwrap_or("text")),
+                max_tokens: Some(
+                    args.get("max_tokens")
+                        .and_then(Value::as_u64)
+                        .map(|n| n as usize)
+                        .or(fetch_config.max_tokens)
+                        .unwrap_or(DEFAULT_MCP_MAX_TOKENS),
                 ),
-                max_tokens: args
-                    .get("max_tokens")
+                timeout_secs: args
+                    .get("timeout")
                     .and_then(Value::as_u64)
-                    .map(|n| n as usize),
-                timeout_secs: args.get("timeout").and_then(Value::as_u64).unwrap_or(10),
-                // The MCP server uses the default trust setup (OS store +
-                // SSL_CERT_FILE); it exposes no insecure/extra-CA knobs.
-                tls: Default::default(),
+                    .or(fetch_config.timeout_secs)
+                    .unwrap_or(10),
+                // The MCP server takes no command-line flags, so extra trust
+                // anchors can only come from the config file.
+                tls: webfetch::tls::TlsConfig {
+                    ca_certs: fetch_config.ca_certs.clone(),
+                    insecure: false,
+                },
             };
             let result = webfetch::fetch_and_convert(options).await?;
-            Ok(tool_text(serde_json::to_string_pretty(&result)?))
+
+            // Rendered text by default. Returning the whole FetchResult as
+            // pretty JSON meant the model paid for escaped newlines and a
+            // duplicate reference list — costly, from a tool whose entire point
+            // is token efficiency.
+            let body = if as_json {
+                serde_json::to_string_pretty(&result)?
+            } else {
+                render_fetch(&result)
+            };
+
+            Ok(match result.status {
+                ContentStatus::Ok => tool_text(body),
+                status => tool_failure(format!(
+                    "{}\n\n[{}]",
+                    body,
+                    status.note().unwrap_or("no content extracted")
+                )),
+            })
         }
         "search" => {
-            let query = args
-                .get("query")
-                .and_then(Value::as_str)
+            let query = arg_str(&args, "query")
                 .ok_or_else(|| anyhow::anyhow!("missing required argument: query"))?
                 .to_string();
-            let safe_search = match args.get("safe_search").and_then(Value::as_str) {
+            let safe_search = match arg_str(&args, "safe_search") {
                 Some("on") => Some(true),
                 Some("off") => Some(false),
                 _ => None,
             };
+            let search_config = &config.webtools.search;
+            let primary = search_config.resolve_primary(None)?;
+            let fallback = search_config.resolve_fallback(&primary);
+
             let options = SearchOptions {
                 query,
                 max_results: Some(
@@ -168,11 +306,71 @@ async fn handle_tool_call(msg: &Value) -> Result<Value> {
                 ),
                 safe_search,
                 timeout_secs: args.get("timeout").and_then(Value::as_u64).unwrap_or(10),
-                tls: Default::default(),
+                tls: webfetch::tls::TlsConfig {
+                    ca_certs: config.webtools.fetch.ca_certs.clone(),
+                    insecure: false,
+                },
+                provider: primary,
+                fallback,
             };
             let output = websearch::run_search(options).await?;
-            Ok(tool_text(serde_json::to_string_pretty(&output)?))
+
+            let body = if as_json {
+                serde_json::to_string_pretty(&output)?
+            } else {
+                websearch::render_output(&output)
+            };
+
+            Ok(if output.status.is_failure() {
+                tool_failure(body)
+            } else {
+                tool_text(body)
+            })
         }
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
+    }
+}
+
+/// The compact rendering an LLM actually wants: a citation header, then the
+/// content (which already carries its own reference block).
+fn render_fetch(result: &webfetch::types::FetchResult) -> String {
+    let mut s = String::new();
+    if !result.title.is_empty() {
+        s.push_str(&result.title);
+        s.push('\n');
+    }
+    if !result.final_url.is_empty() {
+        s.push_str(&result.final_url);
+        s.push('\n');
+    }
+    if !s.is_empty() {
+        s.push('\n');
+    }
+    s.push_str(&result.content);
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_known_protocol_version_is_echoed_back() {
+        assert_eq!(negotiate(Some("2025-06-18")), "2025-06-18");
+        assert_eq!(negotiate(Some("2024-11-05")), "2024-11-05");
+    }
+
+    #[test]
+    fn an_unknown_protocol_version_falls_back_to_the_default() {
+        assert_eq!(negotiate(Some("1999-01-01")), DEFAULT_PROTOCOL_VERSION);
+        assert_eq!(negotiate(None), DEFAULT_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn failed_calls_are_marked_as_errors() {
+        let v = tool_failure("blocked".into());
+        assert_eq!(v["isError"], true);
+        let v = tool_text("fine".into());
+        assert!(v.get("isError").is_none());
     }
 }

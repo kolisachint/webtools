@@ -15,15 +15,24 @@ Docs (keep these current when behavior changes):
 Code:
 
 - `src/main.rs` — unified CLI (`fetch`, `search`, `mcp` subcommands)
+- `src/config.rs` — `~/.hoocode/settings.json` loader. Config lives in the
+  binary only; the published libraries never read the environment or the
+  filesystem on a caller's behalf
 - `src/mcp.rs` — MCP stdio server (JSON-RPC over stdin/stdout)
 - `crates/core` (`webfetch-core`) — shared primitives: `compress.rs`
-  (whitespace/token budgeting), `refs.rs` (reference-style URL rendering)
+  (whitespace/token estimation), `refs.rs` (reference rendering + budget
+  fitting), `http.rs` (user agent, body cap, retry classification),
+  `charset.rs` (response decoding), `tls.rs`
 - `crates/webfetch` (`webfetch`) — fetch + convert library: `fetch.rs`,
-  `media.rs`, `extract.rs`, `types.rs`, `convert/` (text | markdown | structured)
-- `crates/websearch` (`websearch`) — DuckDuckGo Lite search: `lib.rs`,
-  `extract.rs`, `types.rs`
+  `guard.rs` (SSRF), `limits.rs` (nesting bound), `media.rs`, `extract.rs`,
+  `types.rs`, `convert/` (text | markdown | structured)
+- `crates/websearch` (`websearch`) — search: `lib.rs`, `providers/`
+  (duckduckgo | brave | tavily | searxng), `extract.rs`, `types.rs`
 - `examples/latency.rs` — offline latency benchmark
-- `tests/mcp.rs` — MCP stdio integration test
+- `tests/cli.rs` — CLI integration tests (offline fetch, budget, config, exits)
+- `tests/mcp.rs` — MCP stdio integration tests (incl. concurrency)
+- `crates/webfetch/tests/fetch_net.rs` — HTTP path against a local socket:
+  retries, redirect re-validation, body cap, charset, deadline
 - `.github/workflows/` — `ci.yml`, `release.yml`
 - `.agents/commands/` — slash-command definitions (`pr.md`)
 
@@ -56,9 +65,11 @@ Code:
   before committing:
   ```bash
   cargo fmt --all --check
-  cargo clippy --workspace --all-targets -- -D warnings
-  cargo test --workspace
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+  cargo test --workspace --locked
   ```
+- Keep `CHANGELOG.md` current under `## [Unreleased]`; the release workflow
+  stamps that heading with the version and date on merge
 - Offline benchmark: `cargo run --release --example latency`
 - If you create or modify a test, run it and iterate until it passes
 - NEVER commit unless the user asks
@@ -92,19 +103,25 @@ A manual bump is at best ignored and at worst confusing — historically it
 caused a skipped number (a PR bumped to 0.1.12, the workflow then released
 0.1.13). Leave versions untouched and just apply the label.
 
+`release.yml` triggers on a **merged pull request carrying a `cargo:<bump>`
+label** — and on nothing else. One workflow does every step:
+
 1. `/pr <bump>` opens a PR labeled `cargo:<bump>`.
 2. On merge, `release.yml` derives the next version from the latest `v*` tag,
-   bumps every manifest, updates `Cargo.lock`, commits `release: v<version>`,
-   tags `v<version>`, and pushes `main`.
-3. The tag triggers `release.yml`, which publishes the libraries to crates.io
-   (in dependency order, skipping versions already on the index) and then
-   builds + attaches Linux (`x86_64-unknown-linux-gnu`) and macOS
-   (`aarch64-apple-darwin`) binaries to the GitHub release.
+   bumps every manifest, updates `Cargo.lock`, stamps `CHANGELOG.md`, commits
+   `release: v<version>`, tags `v<version>`, and pushes `main`.
+3. The same run publishes the libraries to crates.io (in dependency order,
+   skipping versions already on the index) and builds + attaches binaries for
+   six targets: Linux gnu x86_64, Linux musl x86_64 and aarch64, macOS x86_64
+   and aarch64, Windows x86_64.
 
 Secrets required: `CRATES_IO_TOKEN` (crates.io publish). `GITHUB_TOKEN` is
 provided automatically.
 
-Manual fallback (only if asked): `git tag vX.Y.Z && git push origin vX.Y.Z`.
+**There is no manual tag fallback.** Pushing `vX.Y.Z` by hand releases nothing,
+because the workflow does not listen for tag pushes. To release without a code
+change, open a trivial PR and label it, or run the workflow from the Actions
+tab.
 
 ## **CRITICAL** Git Rules for Parallel Agents **CRITICAL**
 

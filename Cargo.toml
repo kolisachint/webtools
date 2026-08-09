@@ -28,6 +28,9 @@ websearch = { package = "webtools-search", path = "crates/websearch", version = 
 name = "webtools"
 version = "0.1.16"
 edition = "2021"
+# Raise deliberately: the CI `msrv` job builds the workspace on exactly this
+# toolchain, and the libraries are published, so downstream users hold us to it.
+rust-version = "1.82"
 description = "Unified, token-efficient web fetch + search CLI for LLM agents"
 
 [[bin]]
@@ -40,6 +43,7 @@ websearch = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Optimized for a small, blazing-fast shipped binary.

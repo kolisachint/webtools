@@ -3,31 +3,58 @@
 The GitHub Actions workflows live in `.github/workflows/` (`ci.yml` and
 `release.yml`). There is no manual activation step.
 
+> **Pending: `workflow-updates.patch`.** This document already describes the
+> workflow behaviour the patch introduces, but the files themselves are not
+> updated yet — the session that wrote it had no `workflow` OAuth scope, and
+> GitHub refuses such a push. Apply it with a token that has the scope, then
+> delete the file:
+>
+> ```bash
+> git apply ci/workflow-updates.patch && git rm ci/workflow-updates.patch
+> ```
+
 ## Workflow details
 
 ### `ci.yml`
 
 Runs on pushes to `main` and on PRs:
-- `cargo fmt --all --check` — formatting
-- `cargo clippy --workspace --all-targets -- -D warnings` — lints
-- `cargo test --workspace` — all tests
+- **test** (Linux) — `cargo fmt --all --check`, then
+  `cargo clippy --workspace --all-targets --locked -- -D warnings`, then
+  `cargo test --workspace --locked`
+- **cross-compile** — `cargo check` on macOS and Windows. Both are release
+  targets, so a platform-specific break has to fail here rather than at release
+  time.
+- **msrv** — builds the workspace on the `rust-version` declared in
+  `Cargo.toml`. The libraries are published, so downstream users hold us to it.
+
+`--locked` everywhere: a run that quietly resolves different dependencies than
+`Cargo.lock` pins is not testing what ships.
 
 ### `release.yml`
 
 A single workflow triggered when a PR with a `cargo:patch`, `cargo:minor`, or
-`cargo:major` label is merged. Runs five jobs:
+`cargo:major` label is merged. It does **not** trigger on a tag push — pushing a
+tag by hand releases nothing.
 
-1. **bump-and-tag** — reads the current version, bumps it based on the label,
-   commits to `main`, pushes, and creates an annotated `v*` tag
+Runs five jobs:
+
+1. **bump-and-tag** — derives the next version from the latest `v*` tag (not
+   from the manifest, so a stray manual edit cannot shift the sequence), bumps
+   it based on the label, stamps `CHANGELOG.md`'s `[Unreleased]` section with
+   the new version and date, commits to `main`, pushes, and creates an
+   annotated `v*` tag
 2. **publish** — publishes crates to crates.io in dependency order
    (`webtools-core` → `webtools-fetch` → `webtools-search`), skipping any
    version already on the index so a partial run can be retried (needs the
    `CRATES_IO_TOKEN` secret)
 3. **create-release** — creates the GitHub release with auto-generated notes
    (runs in parallel with publish)
-4. **build** — builds `webtools` for seven targets (Linux gnu/musl x86_64 +
-   aarch64, macOS x86_64 + aarch64, Windows x86_64) and attaches each archive
-   plus a per-asset `.sha256`
+
+Jobs 2-4 check out the tag rather than `main`: another PR can merge between
+jobs, and publishing a later commit under this version would be wrong.
+4. **build** — builds `webtools` for six targets (Linux gnu x86_64, Linux musl
+   x86_64 + aarch64, macOS x86_64 + aarch64, Windows x86_64) and attaches each
+   archive plus a per-asset `.sha256`
 5. **checksums** — aggregates a combined `SHA256SUMS` manifest for downloaders
 
 See [`../docs/install.md`](../docs/install.md) for the asset naming table and

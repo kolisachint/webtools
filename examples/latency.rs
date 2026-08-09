@@ -55,7 +55,7 @@ fn main() {
         let _ = webfetch::convert_html(DOCS, "https://docs.example.com/page", &opts_struct);
     });
     bench("search: ddg-lite → results", iters, || {
-        let _ = websearch::build_output("react 19", DDG, 10);
+        let _ = websearch::build_output_from_ddg("react 19", DDG, 10);
     });
 
     // Token-saver evidence: how much smaller is the reference-style output?
@@ -68,7 +68,7 @@ fn main() {
         result.references.len(),
     );
 
-    let search = websearch::build_output("react 19", DDG, 10);
+    let search = websearch::build_output_from_ddg("react 19", DDG, 10);
     println!(
         "search sample: input {} B HTML → ~{} tokens, {} results, {} references preserved",
         DDG.len(),

@@ -1,28 +1,56 @@
 use reqwest::header::{CONTENT_TYPE, LOCATION};
-use reqwest::{redirect::Policy, Client, Response};
+use reqwest::{redirect::Policy, Client};
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::guard;
 use crate::tls::TlsConfig;
+use webfetch_core::charset;
+use webfetch_core::http::{
+    read_body_capped_bytes, transient_send_error, transient_status, USER_AGENT,
+};
 
-const USER_AGENT: &str = concat!("webfetch/", env!("CARGO_PKG_VERSION"));
 const MAX_ATTEMPTS: u32 = 3;
 const MAX_REDIRECTS: usize = 5;
 
-/// Hard cap on the response body we will read (5 MiB). The HTML extractor turns
-/// a page into a few KB of text, so a multi-megabyte body is almost never worth
-/// the bandwidth, memory, and parse time — and an unbounded read is a DoS lever.
-/// Bodies over the cap are *truncated* (not errored): partial content is still
-/// useful and the extractor copes with truncated HTML.
-const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
+/// Multiplier turning the per-request `--timeout` into a budget for the whole
+/// fetch.
+///
+/// `--timeout` bounds one request. With retries and redirects a single fetch
+/// could issue `MAX_ATTEMPTS * (MAX_REDIRECTS + 1)` requests, so `--timeout 10`
+/// could keep running for minutes — not what anyone setting a timeout expects.
+/// The whole fetch now shares one deadline, and each request gets whatever is
+/// left of it.
+const TOTAL_BUDGET_MULTIPLIER: u32 = 3;
 
 /// Outcome of an HTTP fetch: the body, the URL we actually landed on after
 /// following redirects, and the response's `Content-Type` (if any).
+#[derive(Debug, Clone)]
 pub struct FetchedPage {
     pub body: String,
     pub final_url: String,
     pub content_type: Option<String>,
+    /// Set when the page declared a charset this build cannot decode, so the
+    /// body was read as UTF-8 and may be garbled.
+    pub undecodable_charset: Option<String>,
+}
+
+/// Find `<meta charset=…>` in the head of a body whose header declared nothing.
+///
+/// Only the first 2 KiB are searched: the declaration is required to appear
+/// early, and scanning a whole 5 MiB body for it would be wasted work.
+fn sniff_meta_charset(raw: &[u8]) -> Option<String> {
+    const WINDOW: usize = 2048;
+    let head = &raw[..raw.len().min(WINDOW)];
+    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
+    let at = text.find("charset")? + "charset".len();
+    let rest = text[at..].trim_start().strip_prefix('=')?.trim_start();
+    let value: String = rest
+        .trim_start_matches(['"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    (!value.is_empty()).then_some(value)
 }
 
 /// One hop's result: either the final page, or a redirect to a raw `Location`.
@@ -42,14 +70,18 @@ enum Hop {
 /// unpinned.) A consequence is that connection pooling cannot be shared across
 /// hosts via one long-lived client without weakening per-URL IP pinning, so we
 /// deliberately do not cache clients — SSRF safety wins over pool reuse.
+///
+/// Note that IP pinning only takes effect on a direct connection: when
+/// `HTTP(S)_PROXY` is set, the proxy resolves the host itself and the pinned
+/// addresses are never used. See `docs/product.md`.
 fn build_client(
     url: &reqwest::Url,
-    timeout_secs: u64,
+    timeout: Duration,
     pinned: &[SocketAddr],
     tls: &TlsConfig,
 ) -> anyhow::Result<Client> {
     let mut builder = Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
+        .timeout(timeout)
         .redirect(Policy::none())
         .user_agent(USER_AGENT)
         .gzip(true)
@@ -67,52 +99,19 @@ fn build_client(
     Ok(builder.build()?)
 }
 
-/// Append as much of `chunk` to `buf` as fits under `max`. Returns `true` once
-/// the cap is reached (the body is truncated and the caller should stop).
-fn push_capped(buf: &mut Vec<u8>, chunk: &[u8], max: usize) -> bool {
-    let remaining = max.saturating_sub(buf.len());
-    if chunk.len() >= remaining {
-        buf.extend_from_slice(&chunk[..remaining]);
-        true
-    } else {
-        buf.extend_from_slice(chunk);
-        false
-    }
-}
-
-/// Read a response body, streaming chunks with a running byte cap so an
-/// oversized body is bounded before it is ever DOM-parsed. The `bool` reports
-/// whether a read error is transient (worth retrying).
-async fn read_body_capped(mut resp: Response) -> Result<String, (anyhow::Error, bool)> {
-    let mut buf: Vec<u8> = Vec::new();
-    // Honour Content-Length to pre-size, but never trust it past the cap.
-    if let Some(len) = resp.content_length() {
-        buf.reserve(len.min(MAX_BODY_BYTES as u64) as usize);
-    }
-    loop {
-        match resp.chunk().await {
-            Ok(Some(chunk)) => {
-                if push_capped(&mut buf, &chunk, MAX_BODY_BYTES) {
-                    break;
-                }
-            }
-            Ok(None) => break,
-            Err(e) => {
-                let transient = e.is_timeout();
-                return Err((e.into(), transient));
-            }
-        }
-    }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
-}
-
 /// One request attempt. The bool in the error reports whether the failure is
 /// transient (worth retrying): connection/timeout errors, 5xx, and 429.
 async fn attempt(client: &Client, url: &str) -> Result<Hop, (anyhow::Error, bool)> {
-    let resp = match client.get(url).send().await {
+    let resp = match client
+        .get(url)
+        .header("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
-            let transient = e.is_timeout() || e.is_connect() || e.is_request();
+            let transient = transient_send_error(&e);
             return Err((e.into(), transient));
         }
     };
@@ -134,7 +133,7 @@ async fn attempt(client: &Client, url: &str) -> Result<Hop, (anyhow::Error, bool
     let resp = match resp.error_for_status() {
         Ok(r) => r,
         Err(e) => {
-            let transient = status.is_server_error() || status.as_u16() == 429;
+            let transient = transient_status(status);
             return Err((e.into(), transient));
         }
     };
@@ -146,23 +145,36 @@ async fn attempt(client: &Client, url: &str) -> Result<Hop, (anyhow::Error, bool
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let body = read_body_capped(resp).await?;
+    // Decode with the response's declared charset rather than assuming UTF-8:
+    // a windows-1252 / ISO-8859-1 page is otherwise returned full of
+    // replacement characters.
+    let raw = read_body_capped_bytes(resp).await?;
+    let declared = content_type
+        .as_deref()
+        .and_then(charset::from_content_type)
+        .or_else(|| sniff_meta_charset(&raw));
+    let (body, undecodable_charset) = charset::decode(&raw, declared.as_deref());
+
     Ok(Hop::Page(FetchedPage {
         body,
         final_url,
         content_type,
+        undecodable_charset,
     }))
 }
 
 /// Issue one hop's request, retrying transient failures with exponential
-/// backoff (200ms, 400ms).
-async fn fetch_with_retries(client: &Client, url: &str) -> anyhow::Result<Hop> {
+/// backoff (200ms, 400ms) while the overall deadline allows.
+async fn fetch_with_retries(client: &Client, url: &str, deadline: Instant) -> anyhow::Result<Hop> {
     let mut delay = Duration::from_millis(200);
     for attempt_no in 1..=MAX_ATTEMPTS {
         match attempt(client, url).await {
             Ok(hop) => return Ok(hop),
             Err((err, transient)) => {
                 if attempt_no == MAX_ATTEMPTS || !transient {
+                    return Err(err);
+                }
+                if Instant::now() + delay >= deadline {
                     return Err(err);
                 }
                 tokio::time::sleep(delay).await;
@@ -176,22 +188,35 @@ async fn fetch_with_retries(client: &Client, url: &str) -> anyhow::Result<Hop> {
 /// Fetch a URL, following redirects manually so the SSRF guard re-validates and
 /// re-pins each hop (closing the DNS-rebinding window for redirected hosts too),
 /// retrying transient failures with exponential backoff. Caps the redirect
-/// chain at [`MAX_REDIRECTS`] and the body at [`MAX_BODY_BYTES`].
+/// chain at [`MAX_REDIRECTS`], the body at
+/// [`webfetch_core::http::MAX_BODY_BYTES`], and the whole operation at
+/// [`TOTAL_BUDGET_MULTIPLIER`] times `timeout_secs`.
 pub async fn fetch_page(
     url: &str,
     timeout_secs: u64,
     tls: &TlsConfig,
 ) -> anyhow::Result<FetchedPage> {
+    let per_request = Duration::from_secs(timeout_secs);
+    let deadline = Instant::now() + per_request * TOTAL_BUDGET_MULTIPLIER;
+
     let mut current = reqwest::Url::parse(url)?;
     let mut hops = 0usize;
 
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!(
+                "fetch exceeded its total budget ({}s across redirects and retries)",
+                timeout_secs * TOTAL_BUDGET_MULTIPLIER as u64
+            );
+        }
+
         // Validate + resolve the host for THIS hop, then pin the connection to
         // exactly those addresses.
         let pinned = guard::validate_url(&current).await?;
-        let client = build_client(&current, timeout_secs, &pinned, tls)?;
+        let client = build_client(&current, per_request.min(remaining), &pinned, tls)?;
 
-        match fetch_with_retries(&client, current.as_str()).await? {
+        match fetch_with_retries(&client, current.as_str(), deadline).await? {
             Hop::Page(page) => return Ok(page),
             Hop::Redirect(location) => {
                 hops += 1;
@@ -203,40 +228,5 @@ pub async fn fetch_page(
                     .map_err(|e| anyhow::anyhow!("invalid redirect target `{location}`: {e}"))?;
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn push_capped_truncates_oversized_chunk() {
-        let mut buf = Vec::new();
-        // A single chunk larger than the cap is clipped to the cap.
-        let stopped = push_capped(&mut buf, &[b'x'; 10], 4);
-        assert!(stopped);
-        assert_eq!(buf.len(), 4);
-    }
-
-    #[test]
-    fn push_capped_accumulates_until_cap() {
-        let mut buf = Vec::new();
-        assert!(!push_capped(&mut buf, b"abc", 8));
-        assert!(!push_capped(&mut buf, b"de", 8));
-        assert_eq!(buf, b"abcde");
-        // Next chunk crosses the cap: only the remaining 3 bytes are kept.
-        let stopped = push_capped(&mut buf, b"fghij", 8);
-        assert!(stopped);
-        assert_eq!(buf.len(), 8);
-        assert_eq!(buf, b"abcdefgh");
-    }
-
-    #[test]
-    fn push_capped_small_body_unaffected() {
-        let mut buf = Vec::new();
-        let stopped = push_capped(&mut buf, b"hello", 1024);
-        assert!(!stopped);
-        assert_eq!(buf, b"hello");
     }
 }

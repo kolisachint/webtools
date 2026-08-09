@@ -3,8 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A unified, **token-efficient** web `fetch` + `search` CLI for LLM agents,
-built around **reference-style URL preservation**. One small, fast binary; no
-API keys, no backend.
+built around **reference-style URL preservation**. One small, fast binary that
+works with no API keys and no backend — and takes them when you want better
+search.
 
 ```bash
 webtools fetch  --url https://docs.example.com/api   # page → compact text + refs
@@ -13,7 +14,24 @@ webtools search --query "rust async runtime"          # web search → results +
 
 Links become inline `[N]` markers with the full URLs collected into a trailing
 reference block — the agent sees `[1]` (≈1 token) but can still recover the
-exact URL.
+exact URL. `--max-tokens` caps the whole output, references included.
+
+Every result also says whether it worked: a blocked search, a page that needs
+JavaScript, and a page that is genuinely empty are three different outcomes, not
+one silent empty answer.
+
+## Search backends
+
+DuckDuckGo needs no key and is the default. When search reliability matters,
+point `webtools` at Brave, Tavily, or your own SearXNG — keys come from the
+environment or `~/.hoocode/settings.json`, never from the command line:
+
+```bash
+webtools search --query "rust async runtime" --provider brave
+```
+
+See [Search providers](docs/product.md#search-providers) and
+[Configuration](docs/product.md#configuration).
 
 ## Behind a proxy?
 
