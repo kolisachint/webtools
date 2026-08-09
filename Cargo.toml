@@ -20,14 +20,14 @@ encoding_rs = "0.8"
 # Internal crates (path + version for crates.io publishing).
 # Published under webtools-* names; the dependency key (and lib name) stays
 # webfetch_core / webfetch / websearch so source imports are unchanged.
-webfetch-core = { package = "webtools-core", path = "crates/core", version = "0.2.0" }
-webfetch = { package = "webtools-fetch", path = "crates/webfetch", version = "0.2.0" }
-websearch = { package = "webtools-search", path = "crates/websearch", version = "0.2.0" }
+webfetch-core = { package = "webtools-core", path = "crates/core", version = "0.3.0" }
+webfetch = { package = "webtools-fetch", path = "crates/webfetch", version = "0.3.0" }
+websearch = { package = "webtools-search", path = "crates/websearch", version = "0.3.0" }
 
 # The workspace root is also the unified CLI binary.
 [package]
 name = "webtools"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 # Raise deliberately: the CI `msrv` job builds the workspace on exactly this
 # toolchain, and the libraries are published, so downstream users hold us to it.
