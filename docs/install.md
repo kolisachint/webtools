@@ -64,8 +64,8 @@ import paths remain `webfetch` and `websearch`:
 
 ```toml
 [dependencies]
-webfetch = { package = "webtools-fetch", version = "0.1" }
-websearch = { package = "webtools-search", version = "0.1" }
+webfetch = { package = "webtools-fetch", version = "0.2" }
+websearch = { package = "webtools-search", version = "0.2" }
 ```
 
 Or pull straight from git:

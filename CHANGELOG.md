@@ -11,6 +11,36 @@ lockstep semantic versioning across all crates.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-09
+
+Supersedes the yanked 0.1.17, which shipped this same work under a patch
+version by mistake.
+
+### Breaking
+
+Every library consumer needs a look at this list. Structs gained public fields,
+so struct-literal construction of them no longer compiles.
+
+- `websearch::types::SearchOptions` gained `provider` and `fallback`.
+- `websearch::types::SearchOutput` gained `status` and `provider`.
+- `websearch::build_output` now takes parsed results, a status and a provider
+  label. The old "parse a DuckDuckGo page" behaviour is `build_output_from_ddg`.
+- `websearch::fetch_ddg_lite` moved to `websearch::providers::ddg::fetch_lite`.
+- `webfetch::types::FetchResult` gained `status`; `Metadata` gained `charset`.
+- `webfetch::fetch::FetchedPage` gained `undecodable_charset`.
+- `webfetch::convert::convert` no longer appends the `References:` block to
+  `content` — which references survive depends on the token budget, so the
+  pipeline assembles it. Use `webfetch::convert_body` for the assembled form,
+  or `refs::fit_to_budget` directly.
+- `webfetch::convert::structured::Block` gained `level`, and `BlockKind` gained
+  `Heading`, `ListItem`, `Code`, `Quote` and `TableRow` alongside `Paragraph`.
+- `webfetch_core::compress::truncate_preserving_refs` is removed. Its job — fit
+  a body and its references inside a budget — is `refs::fit_to_budget`, which
+  actually holds the budget.
+- `webfetch_core::compress::truncate_to_tokens` still has its signature but
+  different behaviour: it now charges the same per-byte cost `estimate_tokens`
+  does, so its result honours the budget on punctuation-dense text.
+
 ### Fixed
 
 - **Search snippets could describe the wrong page.** Results and snippets were
@@ -123,6 +153,13 @@ lockstep semantic versioning across all crates.
   codes.
 - The MCP server's concurrency is verified by timing: three 900 ms fetches
   complete in about one, where the old sequential loop would take three.
+
+## [0.1.17] - 2026-08-09 [YANKED]
+
+Yanked from crates.io. It carried the breaking API changes now listed under
+0.2.0, but was released as a patch: Cargo treats `0.1.16 -> 0.1.17` as
+compatible, so anything depending on `webtools-fetch = "0.1"` would have
+resolved to it and failed to compile. Use 0.2.0 — the contents are identical.
 
 ## [0.1.16] - 2026-06-26
 
