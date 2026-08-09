@@ -332,15 +332,20 @@ is bounded at three times that.
 ### Character encodings
 
 Bodies are decoded with the charset the response declares, read from
-`Content-Type` and falling back to `<meta charset>`. UTF-8 and the
-single-byte Western family (`windows-1252`, `ISO-8859-1`/`latin1`, which
-browsers treat as windows-1252 anyway) are decoded exactly.
+`Content-Type` and falling back to `<meta charset>`. `--from-file` honours the
+`<meta charset>` declaration too, since a local file has no header.
 
-Multi-byte legacy encodings — Shift_JIS, GBK, Big5, EUC-KR — are not. Decoding
-them needs real conversion tables, which would add roughly a megabyte to a
-binary whose whole pitch is being small. Those pages are read as UTF-8, which
-garbles them, and the declared charset is reported on `metadata.charset` and as
-a stderr warning so the cause is visible rather than a mystery.
+Decoding goes through `encoding_rs` — the implementation Firefox uses — so the
+whole WHATWG Encoding Standard is covered exactly: the single-byte Western
+family (`windows-1252`, `ISO-8859-*`), the CJK multi-byte encodings (Shift_JIS,
+GBK, GB18030, Big5, EUC-KR, EUC-JP, ISO-2022-JP), KOI8, and UTF-16. Label
+lookup follows the WHATWG aliasing rules, so what real pages actually declare
+(`latin1`, `sjis`, `x-gbk`, `windows-949`, …) resolves. The tables cost about
+0.2 MB of binary.
+
+A label no encoding matches is the one remaining failure case: the body is read
+as UTF-8, and the label is reported on `metadata.charset` and as a stderr
+warning, so a garbled page has a visible cause rather than being a mystery.
 
 ## TLS, proxies, and custom CAs
 
@@ -422,7 +427,7 @@ src/
 crates/
 ├── core/               webfetch-core: primitives shared by both tools
 │   └── src/
-│       ├── charset.rs    Response decoding (UTF-8, windows-1252 family)
+│       ├── charset.rs    Response decoding (encoding_rs; WHATWG labels)
 │       ├── compress.rs   Whitespace/decorative reduction + token estimation
 │       ├── refs.rs       Referable trait, reference block, budget fitting
 │       ├── http.rs       Shared user agent, body cap, retry classification
