@@ -1,78 +1,101 @@
 //! Decoding response bodies that are not UTF-8.
 //!
-//! Most of the web is UTF-8, and `String::from_utf8_lossy` handles it. The
-//! common exception by a wide margin is the single-byte Western European
-//! family — `windows-1252`, and `ISO-8859-1`/`latin1`, which browsers treat as
-//! windows-1252 anyway. Those are a 128-entry table, decoded here directly.
+//! Most of the web is UTF-8 and takes the fast path here. The rest is decoded
+//! through `encoding_rs`, the same implementation Firefox uses, which covers
+//! the whole WHATWG Encoding Standard: the single-byte Western family
+//! (`windows-1252`, `ISO-8859-*`), the CJK multi-byte encodings (Shift_JIS,
+//! GBK, GB18030, Big5, EUC-KR, EUC-JP, ISO-2022-JP), KOI8, and UTF-16.
 //!
-//! Multi-byte legacy encodings (Shift_JIS, GBK, Big5, EUC-KR) need real tables,
-//! and pulling in a full encoding library would add roughly a megabyte to a
-//! binary whose whole pitch is being small. Those are decoded lossily and the
-//! declared charset is reported on the result instead, so a caller can see why
-//! the text looks wrong rather than guessing.
-
-/// Upper half of windows-1252 (0x80-0x9F); 0xA0-0xFF matches Latin-1, which
-/// matches the Unicode code points of the same value.
-const CP1252_HIGH: [char; 32] = [
-    '\u{20AC}', '\u{FFFD}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
-    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{FFFD}', '\u{017D}', '\u{FFFD}',
-    '\u{FFFD}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
-    '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{FFFD}', '\u{017E}', '\u{0178}',
-];
+//! An earlier version hand-rolled a windows-1252 table and reported everything
+//! else as undecodable, on the grounds that conversion tables would bloat a
+//! binary that advertises being small. Measured, the tables cost about 0.2 MB —
+//! against handing back mojibake for every Japanese, Chinese and Korean page,
+//! which is most of the non-Latin web.
+//!
+//! Label lookup follows the WHATWG rules, so the aliases real pages use
+//! (`latin1`, `sjis`, `x-gbk`, `ms949`, …) all resolve.
 
 /// What decoding a body needs, given its declared charset.
+///
+/// Non-exhaustive: the set of recognized encodings is `encoding_rs`', not ours,
+/// and this should be able to grow without breaking callers again.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Charset {
-    /// UTF-8 (or nothing declared): decode lossily as UTF-8.
+    /// UTF-8 (or nothing declared): decoded as UTF-8, lossily.
     Utf8,
-    /// windows-1252 / ISO-8859-1: decoded here, exactly.
-    Cp1252,
-    /// Something else. Decoded as UTF-8, which will mangle it; the label is
-    /// carried on the result so the caller knows.
-    Unsupported(String),
+    /// A label we can decode exactly. Carries the encoding's canonical name.
+    Supported(String),
+    /// A label no known encoding matches. Decoded as UTF-8, which will mangle
+    /// it, and reported so the caller can see why.
+    Unknown(String),
+}
+
+/// Is this label UTF-8 (or absent), and therefore the fast path?
+fn is_utf8_label(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "" | "utf-8" | "utf8" | "unicode-1-1-utf-8" | "us-ascii" | "ascii"
+    )
 }
 
 /// Classify a charset label.
 pub fn classify(label: &str) -> Charset {
-    let normalized = label
-        .trim()
-        .trim_matches('"')
-        .to_ascii_lowercase()
-        .replace('_', "-");
-    match normalized.as_str() {
-        "" | "utf-8" | "utf8" | "us-ascii" | "ascii" => Charset::Utf8,
-        // Browsers decode every one of these as windows-1252, which is a strict
-        // superset of ISO-8859-1 over the bytes that matter.
-        "windows-1252" | "cp1252" | "iso-8859-1" | "latin1" | "latin-1" | "iso8859-1"
-        | "iso-latin-1" | "ansi-x3.4-1968" => Charset::Cp1252,
-        _ => Charset::Unsupported(label.trim().trim_matches('"').to_string()),
+    let trimmed = label.trim().trim_matches('"');
+    if is_utf8_label(&trimmed.to_ascii_lowercase()) {
+        return Charset::Utf8;
+    }
+    match encoding_rs::Encoding::for_label(trimmed.as_bytes()) {
+        // `for_label` maps the UTF-8 aliases too; keep them on the fast path.
+        Some(encoding) if encoding == encoding_rs::UTF_8 => Charset::Utf8,
+        Some(encoding) => Charset::Supported(encoding.name().to_string()),
+        None => Charset::Unknown(trimmed.to_string()),
     }
 }
 
 /// Decode a body according to its declared charset.
 ///
 /// Returns the text, plus the charset label to report when the result may be
-/// garbled (`None` when the decoding is exact).
+/// garbled — `None` whenever the decoding was exact.
 pub fn decode(bytes: &[u8], label: Option<&str>) -> (String, Option<String>) {
-    match label.map(classify).unwrap_or(Charset::Utf8) {
-        Charset::Utf8 => (String::from_utf8_lossy(bytes).into_owned(), None),
-        Charset::Cp1252 => (decode_cp1252(bytes), None),
-        Charset::Unsupported(name) => (String::from_utf8_lossy(bytes).into_owned(), Some(name)),
+    let Some(label) = label else {
+        return (String::from_utf8_lossy(bytes).into_owned(), None);
+    };
+    let trimmed = label.trim().trim_matches('"');
+    if is_utf8_label(&trimmed.to_ascii_lowercase()) {
+        return (String::from_utf8_lossy(bytes).into_owned(), None);
+    }
+
+    match encoding_rs::Encoding::for_label(trimmed.as_bytes()) {
+        Some(encoding) => {
+            // `decode` strips a BOM when present and substitutes replacement
+            // characters for malformed sequences rather than failing.
+            let (text, _, _) = encoding.decode(bytes);
+            (text.into_owned(), None)
+        }
+        None => (
+            String::from_utf8_lossy(bytes).into_owned(),
+            Some(trimmed.to_string()),
+        ),
     }
 }
 
-/// Decode windows-1252. Every byte maps to exactly one character, so this
-/// cannot fail.
-pub fn decode_cp1252(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len());
-    for &b in bytes {
-        match b {
-            0x00..=0x7F => out.push(b as char),
-            0x80..=0x9F => out.push(CP1252_HIGH[(b - 0x80) as usize]),
-            _ => out.push(b as char), // 0xA0-0xFF: Latin-1 == Unicode
-        }
-    }
-    out
+/// Find `<meta charset=…>` in the head of a body whose header declared nothing.
+///
+/// Only the first 2 KiB are searched: the declaration is required to appear
+/// early, and scanning a whole 5 MiB body for it would be wasted work.
+pub fn sniff_meta(raw: &[u8]) -> Option<String> {
+    const WINDOW: usize = 2048;
+    let head = &raw[..raw.len().min(WINDOW)];
+    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
+    let at = text.find("charset")? + "charset".len();
+    let rest = text[at..].trim_start().strip_prefix('=')?.trim_start();
+    let value: String = rest
+        .trim_start_matches(['"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    (!value.is_empty()).then_some(value)
 }
 
 /// Pull a `charset=` value out of a `Content-Type` header.
@@ -94,23 +117,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn utf8_labels_need_no_special_handling() {
-        assert_eq!(classify("utf-8"), Charset::Utf8);
-        assert_eq!(classify("UTF-8"), Charset::Utf8);
-        assert_eq!(classify(" \"utf8\" "), Charset::Utf8);
-        assert_eq!(classify("us-ascii"), Charset::Utf8);
-    }
-
-    #[test]
-    fn latin_labels_all_decode_as_cp1252() {
-        for label in [
-            "ISO-8859-1",
-            "iso_8859-1",
-            "latin1",
-            "windows-1252",
-            "CP1252",
-        ] {
-            assert_eq!(classify(label), Charset::Cp1252, "{label}");
+    fn utf8_labels_take_the_fast_path() {
+        for label in ["utf-8", "UTF-8", " \"utf8\" ", "us-ascii", ""] {
+            assert_eq!(classify(label), Charset::Utf8, "{label}");
         }
     }
 
@@ -125,14 +134,72 @@ mod tests {
 
     #[test]
     fn cp1252_smart_quotes_survive() {
-        let bytes = b"\x93quoted\x94 \x85";
-        assert_eq!(decode_cp1252(bytes), "“quoted” …");
+        let (text, _) = decode(b"\x93quoted\x94 \x85", Some("windows-1252"));
+        assert_eq!(text, "“quoted” …");
+    }
+
+    /// The case the hand-rolled table could not handle: CJK pages came back as
+    /// replacement characters.
+    #[test]
+    fn shift_jis_decodes() {
+        // "こんにちは" in Shift_JIS.
+        let bytes = b"\x82\xb1\x82\xf1\x82\xc9\x82\xbf\x82\xcd";
+        let (text, reported) = decode(bytes, Some("Shift_JIS"));
+        assert_eq!(text, "こんにちは");
+        assert!(reported.is_none());
     }
 
     #[test]
-    fn an_unsupported_charset_is_reported_rather_than_hidden() {
-        let (_, reported) = decode(b"\x82\xa0", Some("Shift_JIS"));
-        assert_eq!(reported.as_deref(), Some("Shift_JIS"));
+    fn gbk_decodes() {
+        // "中文" in GBK.
+        let (text, reported) = decode(b"\xd6\xd0\xce\xc4", Some("GBK"));
+        assert_eq!(text, "中文");
+        assert!(reported.is_none());
+    }
+
+    #[test]
+    fn big5_decodes() {
+        // "中文" in Big5.
+        let (text, reported) = decode(b"\xa4\xa4\xa4\xe5", Some("Big5"));
+        assert_eq!(text, "中文");
+        assert!(reported.is_none());
+    }
+
+    #[test]
+    fn euc_kr_decodes() {
+        // "한국" in EUC-KR.
+        let (text, reported) = decode(b"\xc7\xd1\xb1\xb9", Some("EUC-KR"));
+        assert_eq!(text, "한국");
+        assert!(reported.is_none());
+    }
+
+    /// Real pages declare aliases, not canonical names.
+    #[test]
+    fn whatwg_aliases_resolve() {
+        for (label, canonical) in [
+            ("latin1", "windows-1252"),
+            ("sjis", "Shift_JIS"),
+            ("x-gbk", "GBK"),
+            ("windows-949", "EUC-KR"),
+            ("korean", "EUC-KR"),
+            ("iso-2022-jp", "ISO-2022-JP"),
+        ] {
+            assert_eq!(
+                classify(label),
+                Charset::Supported(canonical.to_string()),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecognized_label_is_reported_rather_than_hidden() {
+        assert_eq!(
+            classify("x-not-a-real-encoding"),
+            Charset::Unknown("x-not-a-real-encoding".into())
+        );
+        let (_, reported) = decode(b"bytes", Some("x-not-a-real-encoding"));
+        assert_eq!(reported.as_deref(), Some("x-not-a-real-encoding"));
     }
 
     #[test]
@@ -140,6 +207,30 @@ mod tests {
         let (text, reported) = decode("Café — naïve".as_bytes(), Some("utf-8"));
         assert_eq!(text, "Café — naïve");
         assert!(reported.is_none());
+    }
+
+    #[test]
+    fn a_utf16_body_decodes_including_its_bom() {
+        // "hi" in UTF-16LE with a BOM.
+        let (text, reported) = decode(b"\xff\xfeh\x00i\x00", Some("utf-16"));
+        assert_eq!(text, "hi");
+        assert!(reported.is_none());
+    }
+
+    #[test]
+    fn meta_charset_is_sniffed_from_the_head() {
+        assert_eq!(
+            sniff_meta(br#"<html><head><meta charset="Shift_JIS"></head>"#).as_deref(),
+            Some("shift_jis")
+        );
+        assert_eq!(
+            sniff_meta(
+                b"<html><head><meta http-equiv=content-type content='text/html; charset=gbk'>"
+            )
+            .as_deref(),
+            Some("gbk")
+        );
+        assert_eq!(sniff_meta(b"<html><head></head>").as_deref(), None);
     }
 
     #[test]

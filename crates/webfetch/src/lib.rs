@@ -284,12 +284,12 @@ fn has_scripts(raw: &str) -> bool {
         .any(|w| w.eq_ignore_ascii_case(b"<script"))
 }
 
-/// Report a declared charset this build cannot decode.
+/// Report a declared charset no known encoding matches.
 ///
 /// The network path decodes the body before it reaches here (see
 /// `webfetch_core::charset`), so this only fires for offline callers passing a
-/// header in directly, and only for encodings outside the UTF-8 and
-/// windows-1252 families — those are decoded exactly and never reported.
+/// header in directly, and only for labels `encoding_rs` does not recognize at
+/// all — every encoding in the WHATWG standard decodes exactly.
 fn undecodable_charset(header: Option<&str>, doc: &Html) -> Option<String> {
     let declared = header.and_then(charset::from_content_type).or_else(|| {
         let sel = Selector::parse("meta[charset]").ok()?;
@@ -300,7 +300,7 @@ fn undecodable_charset(header: Option<&str>, doc: &Html) -> Option<String> {
     })?;
 
     match charset::classify(&declared) {
-        charset::Charset::Unsupported(name) => Some(name),
+        charset::Charset::Unknown(name) => Some(name),
         _ => None,
     }
 }
@@ -355,21 +355,21 @@ pub fn parse_content_type(s: &str) -> ContentType {
 mod tests {
     use super::*;
 
-    /// Only charsets that cannot be decoded exactly are reported; UTF-8 and the
-    /// windows-1252 family are handled, so they are not a problem to flag.
+    /// Only labels no encoding matches are reported. Everything in the WHATWG
+    /// standard decodes exactly, so flagging it would be noise.
     #[test]
-    fn only_undecodable_charsets_are_reported() {
+    fn only_unrecognized_charsets_are_reported() {
         let doc = Html::parse_document("<html></html>");
-        assert_eq!(
-            undecodable_charset(Some("text/html; charset=utf-8"), &doc),
-            None
-        );
-        assert_eq!(
-            undecodable_charset(Some("text/html; charset=ISO-8859-1"), &doc),
-            None
-        );
-        let doc = Html::parse_document(r#"<html><head><meta charset="shift_jis"></head></html>"#);
-        assert_eq!(undecodable_charset(None, &doc), Some("shift_jis".into()));
+        for header in [
+            "text/html; charset=utf-8",
+            "text/html; charset=ISO-8859-1",
+            "text/html; charset=Shift_JIS",
+            "text/html; charset=GBK",
+        ] {
+            assert_eq!(undecodable_charset(Some(header), &doc), None, "{header}");
+        }
+        let doc = Html::parse_document(r#"<html><head><meta charset="x-made-up"></head></html>"#);
+        assert_eq!(undecodable_charset(None, &doc), Some("x-made-up".into()));
     }
 
     #[test]

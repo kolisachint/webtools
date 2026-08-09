@@ -35,24 +35,6 @@ pub struct FetchedPage {
     pub undecodable_charset: Option<String>,
 }
 
-/// Find `<meta charset=…>` in the head of a body whose header declared nothing.
-///
-/// Only the first 2 KiB are searched: the declaration is required to appear
-/// early, and scanning a whole 5 MiB body for it would be wasted work.
-fn sniff_meta_charset(raw: &[u8]) -> Option<String> {
-    const WINDOW: usize = 2048;
-    let head = &raw[..raw.len().min(WINDOW)];
-    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
-    let at = text.find("charset")? + "charset".len();
-    let rest = text[at..].trim_start().strip_prefix('=')?.trim_start();
-    let value: String = rest
-        .trim_start_matches(['"', '\''])
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    (!value.is_empty()).then_some(value)
-}
-
 /// One hop's result: either the final page, or a redirect to a raw `Location`.
 enum Hop {
     Page(FetchedPage),
@@ -152,7 +134,7 @@ async fn attempt(client: &Client, url: &str) -> Result<Hop, (anyhow::Error, bool
     let declared = content_type
         .as_deref()
         .and_then(charset::from_content_type)
-        .or_else(|| sniff_meta_charset(&raw));
+        .or_else(|| charset::sniff_meta(&raw));
     let (body, undecodable_charset) = charset::decode(&raw, declared.as_deref());
 
     Ok(Hop::Page(FetchedPage {

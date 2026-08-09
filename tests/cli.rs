@@ -144,6 +144,85 @@ fn a_non_utf8_file_is_read_lossily() {
     assert!(stdout(&out).contains("Caf"), "{}", stdout(&out));
 }
 
+/// `--from-file` has no Content-Type to read, so it has to honour
+/// `<meta charset>` — otherwise the offline path mangles pages the network
+/// path handles fine.
+#[test]
+fn from_file_decodes_a_declared_multibyte_charset() {
+    let cases: [(&str, &[u8], &str); 3] = [
+        // "こんにちは" in Shift_JIS.
+        (
+            "sjis.html",
+            b"<html><head><meta charset=\"shift_jis\"></head><body><article><p>\x82\xb1\x82\xf1\x82\xc9\x82\xbf\x82\xcd</p></article></body></html>",
+            "こんにちは",
+        ),
+        // "中文" in GBK.
+        (
+            "gbk.html",
+            b"<html><head><meta charset=\"gbk\"></head><body><article><p>\xd6\xd0\xce\xc4</p></article></body></html>",
+            "中文",
+        ),
+        // "한국" in EUC-KR.
+        (
+            "euckr.html",
+            b"<html><head><meta charset=\"euc-kr\"></head><body><article><p>\xc7\xd1\xb1\xb9</p></article></body></html>",
+            "한국",
+        ),
+    ];
+
+    for (name, bytes, expected) in cases {
+        let dir = tempdir();
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("write");
+        let out = run(
+            &[
+                "fetch",
+                "--from-file",
+                path.to_str().unwrap(),
+                "--url",
+                "https://x.test/",
+                "--json",
+            ],
+            &[],
+            None,
+        );
+        assert!(out.status.success(), "{name}: {}", stderr(&out));
+        let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid json");
+        assert!(
+            v["content"].as_str().unwrap().contains(expected),
+            "{name}: expected {expected:?}, got {:?}",
+            v["content"]
+        );
+        assert!(
+            v["metadata"]["charset"].is_null(),
+            "{name}: an exact decode must not warn"
+        );
+    }
+}
+
+/// A label no encoding matches must still be surfaced, or a garbled page looks
+/// like a correct one.
+#[test]
+fn an_unrecognized_charset_label_warns() {
+    let path = write_file(
+        "bogus.html",
+        "<html><head><meta charset=\"x-made-up\"></head><body><article><p>hi</p></article></body></html>",
+    );
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://x.test/",
+        ],
+        &[],
+        None,
+    );
+    assert!(out.status.success());
+    assert!(stderr(&out).contains("x-made-up"), "{}", stderr(&out));
+}
+
 #[test]
 fn a_missing_file_reports_the_path() {
     let out = run(&["fetch", "--from-file", "/no/such/file.html"], &[], None);

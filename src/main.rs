@@ -105,9 +105,13 @@ async fn main() -> ExitCode {
     }
 }
 
-fn read_input(from_file: &str) -> anyhow::Result<String> {
-    // Read lossily: a page in an encoding we cannot decode should come back
-    // imperfect, not refuse to run with "stream did not contain valid UTF-8".
+/// Read a local body and decode it with whatever charset it declares.
+///
+/// Returns the text plus a charset label to warn about when nothing could
+/// decode it. There is no `Content-Type` for a local file, so the declaration
+/// can only come from `<meta charset>` — but the offline path has to honour it
+/// too, or `--from-file` mangles the same pages the network path handles.
+fn read_input(from_file: &str) -> anyhow::Result<(String, Option<String>)> {
     let bytes = if from_file == "-" {
         let mut buf = Vec::new();
         std::io::stdin().read_to_end(&mut buf)?;
@@ -116,7 +120,8 @@ fn read_input(from_file: &str) -> anyhow::Result<String> {
         std::fs::read(from_file)
             .map_err(|e| anyhow::anyhow!("reading --from-file {from_file}: {e}"))?
     };
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    let declared = webfetch::charset::sniff_meta(&bytes);
+    Ok(webfetch::charset::decode(&bytes, declared.as_deref()))
 }
 
 fn parse_safe_search(value: Option<&str>) -> Option<bool> {
@@ -200,8 +205,12 @@ async fn run() -> anyhow::Result<ExitCode> {
                              resolved and will not appear as references"
                         );
                     }
-                    let body = read_input(&path)?;
-                    webfetch::convert_body(&body, &base, None, &options)
+                    let (body, undecodable) = read_input(&path)?;
+                    let mut result = webfetch::convert_body(&body, &base, None, &options);
+                    if undecodable.is_some() {
+                        result.metadata.charset = undecodable;
+                    }
+                    result
                 }
                 None => {
                     if base.is_empty() {

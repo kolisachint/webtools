@@ -202,18 +202,38 @@ async fn a_latin1_page_is_decoded_with_its_declared_charset() {
 }
 
 #[tokio::test]
-async fn an_undecodable_charset_is_reported() {
+async fn a_shift_jis_page_decodes() {
     let (base, _) = serve(Arc::new(|_| {
         response(
             "200 OK",
             "Content-Type: text/html; charset=Shift_JIS\r\n",
-            b"<html><body><p>\x82\xa0</p></body></html>",
+            // "こんにちは" in Shift_JIS.
+            b"<html><body><article><p>\x82\xb1\x82\xf1\x82\xc9\x82\xbf\x82\xcd</p>\
+              </article></body></html>",
         )
     }))
     .await;
 
     let page = fetch(&base).await.expect("fetch");
-    assert_eq!(page.undecodable_charset.as_deref(), Some("Shift_JIS"));
+    assert!(page.body.contains("こんにちは"), "body: {}", page.body);
+    assert!(page.undecodable_charset.is_none());
+}
+
+/// A label no encoding matches still has to be surfaced, or a garbled page
+/// looks like a correct one.
+#[tokio::test]
+async fn an_unrecognized_charset_is_reported() {
+    let (base, _) = serve(Arc::new(|_| {
+        response(
+            "200 OK",
+            "Content-Type: text/html; charset=x-made-up\r\n",
+            b"<html><body><p>bytes</p></body></html>",
+        )
+    }))
+    .await;
+
+    let page = fetch(&base).await.expect("fetch");
+    assert_eq!(page.undecodable_charset.as_deref(), Some("x-made-up"));
 }
 
 #[tokio::test]

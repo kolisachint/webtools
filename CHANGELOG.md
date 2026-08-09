@@ -11,6 +11,27 @@ lockstep semantic versioning across all crates.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CJK pages came back as mojibake.** Shift_JIS, GBK, GB18030, Big5, EUC-KR,
+  EUC-JP and ISO-2022-JP are now decoded exactly, along with the rest of the
+  WHATWG Encoding Standard, via `encoding_rs`. 0.2.0 decoded only UTF-8 and the
+  single-byte Western family and reported everything else as undecodable, to
+  avoid the conversion tables; measured, they cost 0.17 MB of binary against
+  garbling most of the non-Latin web. Label lookup follows the WHATWG aliasing
+  rules, so what pages actually declare (`latin1`, `sjis`, `x-gbk`,
+  `windows-949`, …) resolves.
+- `--from-file` ignored `<meta charset>` and read every local file as UTF-8, so
+  the offline path mangled pages the network path handled correctly.
+
+### Breaking
+
+- `webfetch_core::charset::Charset` replaces its `Cp1252` and `Unsupported`
+  variants with `Supported(String)` (carrying the encoding's canonical name)
+  and `Unknown(String)`. It is now `#[non_exhaustive]`, so the recognized set
+  can grow without breaking callers again.
+- `webfetch_core::charset::decode_cp1252` is removed; `decode` handles it.
+
 ## [0.2.0] - 2026-08-09
 
 Supersedes the yanked 0.1.17, which shipped this same work under a patch
