@@ -1,6 +1,6 @@
 [package]
 name = "webtools-search"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.82"
 description = "Web search with reference-style URLs: keyless DuckDuckGo, or Brave/Tavily/SearXNG"
