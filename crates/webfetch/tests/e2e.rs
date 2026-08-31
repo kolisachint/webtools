@@ -497,3 +497,110 @@ fn test_metadata_extraction() {
     assert_eq!(r.metadata.site_name.as_deref(), Some("Example Docs"));
     assert_eq!(r.metadata.lang.as_deref(), Some("en"));
 }
+
+// --- paging a long document ------------------------------------------------
+
+/// Read a document to the end by following `next_offset`, returning each
+/// window's reported span. Mirrors what a caller (agent or human) does with the
+/// footer, so the test fails the same way they would.
+fn page_through(html: &str, max_tokens: usize) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut offset = Some(0usize);
+    while let Some(start) = offset {
+        let options = FetchOptions {
+            url: "https://example.com/doc".to_string(),
+            content_type: ContentType::Text,
+            max_tokens: Some(max_tokens),
+            offset: start,
+            ..Default::default()
+        };
+        let result = convert_html(html, "https://example.com/doc", &options);
+        let end = result.next_offset.unwrap_or(result.total_bytes);
+        spans.push((result.offset, end));
+        assert!(spans.len() < 500, "paging failed to terminate");
+        offset = result.next_offset;
+    }
+    spans
+}
+
+#[test]
+fn a_budgeted_fetch_reports_the_document_it_is_a_slice_of() {
+    let options = FetchOptions {
+        url: "https://example.com/doc".to_string(),
+        content_type: ContentType::Text,
+        max_tokens: Some(40),
+        ..Default::default()
+    };
+    let result = convert_html(DOCS, "https://example.com/doc", &options);
+
+    assert!(
+        result.truncated,
+        "a 40-token budget cannot hold the fixture"
+    );
+    assert_eq!(result.offset, 0);
+    assert!(result.next_offset.is_some());
+    assert!(
+        result.total_token_estimate > result.token_estimate,
+        "total {} should exceed the window's {}",
+        result.total_token_estimate,
+        result.token_estimate
+    );
+}
+
+/// The guarantee paging is worth having: windows tile the document — every byte
+/// covered once, in order, ending exactly at the end.
+#[test]
+fn following_next_offset_covers_the_document_once() {
+    let spans = page_through(DOCS, 12);
+
+    assert!(spans.len() > 2, "expected several windows, got {spans:?}");
+    assert_eq!(spans[0].0, 0, "reading starts at the beginning");
+    for pair in spans.windows(2) {
+        assert_eq!(
+            pair[0].1, pair[1].0,
+            "windows must meet exactly: {:?} then {:?}",
+            pair[0], pair[1]
+        );
+    }
+    let last = spans.last().expect("at least one window");
+    let options = FetchOptions {
+        url: "https://example.com/doc".to_string(),
+        content_type: ContentType::Text,
+        max_tokens: Some(12),
+        ..Default::default()
+    };
+    let total = convert_html(DOCS, "https://example.com/doc", &options).total_bytes;
+    assert_eq!(last.1, total, "the last window ends at the document's end");
+}
+
+#[test]
+fn an_unbudgeted_fetch_reports_no_continuation() {
+    let options = FetchOptions {
+        url: "https://example.com/doc".to_string(),
+        content_type: ContentType::Text,
+        max_tokens: None,
+        ..Default::default()
+    };
+    let result = convert_html(BLOG, "https://example.com/doc", &options);
+
+    assert!(!result.truncated);
+    assert_eq!(result.next_offset, None);
+    assert_eq!(result.offset, 0);
+}
+
+/// An offset past the end is a stale bookmark, not a crash: an empty last
+/// window that reports no continuation.
+#[test]
+fn an_offset_past_the_end_terminates_instead_of_panicking() {
+    let options = FetchOptions {
+        url: "https://example.com/doc".to_string(),
+        content_type: ContentType::Text,
+        max_tokens: Some(500),
+        offset: 10_000_000,
+        ..Default::default()
+    };
+    let result = convert_html(DOCS, "https://example.com/doc", &options);
+
+    assert_eq!(result.next_offset, None);
+    assert!(!result.truncated);
+}

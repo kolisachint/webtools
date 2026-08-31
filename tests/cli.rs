@@ -76,6 +76,15 @@ const DOC: &str = r#"<html><head><title>Widgets</title></head><body><article>
 <p>See the <a href="/api/v2/users">users endpoint</a> for details.</p>
 </article></body></html>"#;
 
+/// A document too long for one window, for the paging tests.
+fn long_doc() -> String {
+    let paragraphs = (1..=60)
+        .map(|i| format!("<p>Paragraph {i} explains one more part of the widget system in enough words to cost tokens.</p>"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("<html><head><title>Widgets</title></head><body><article>{paragraphs}</article></body></html>")
+}
+
 // --- offline fetch ----------------------------------------------------------
 
 #[test]
@@ -250,6 +259,98 @@ fn from_file_without_a_url_warns_that_links_are_dropped() {
 }
 
 // --- budget and formats -----------------------------------------------------
+
+/// A budgeted fetch has to say what it is a slice of and where to resume;
+/// without it the CLI ends mid-sentence with nothing to act on.
+#[test]
+fn a_budgeted_fetch_prints_where_it_stopped_and_how_to_continue() {
+    let path = write_file("long.html", &long_doc());
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/page",
+            "--max-tokens",
+            "40",
+        ],
+        &[],
+        None,
+    );
+
+    let text = stdout(&out);
+    assert!(
+        text.contains("continue with --offset"),
+        "no continuation footer: {text}"
+    );
+    assert!(text.contains("tokens);"), "no token accounting: {text}");
+}
+
+/// Following the printed offsets reads the document once through, and the run
+/// that finishes it prints no footer — the signal that there is nothing left.
+#[test]
+fn offset_pages_through_a_document_and_stops_at_the_end() {
+    let path = write_file("long.html", &long_doc());
+    let mut offset = 0usize;
+    let mut runs = 0;
+
+    loop {
+        let offset_arg = offset.to_string();
+        let out = run(
+            &[
+                "fetch",
+                "--from-file",
+                path.to_str().unwrap(),
+                "--url",
+                "https://docs.test/page",
+                "--max-tokens",
+                "40",
+                "--offset",
+                &offset_arg,
+            ],
+            &[],
+            None,
+        );
+        assert!(out.status.success(), "fetch failed: {}", stderr(&out));
+
+        let text = stdout(&out);
+        runs += 1;
+        assert!(runs < 100, "paging failed to terminate");
+
+        let Some(next) = text
+            .rsplit("continue with --offset ")
+            .next()
+            .and_then(|tail| tail.trim_end().trim_end_matches(']').parse::<usize>().ok())
+        else {
+            break;
+        };
+        assert!(next > offset, "offset must advance: {offset} -> {next}");
+        offset = next;
+    }
+
+    assert!(runs > 2, "expected several pages, got {runs}");
+}
+
+/// A whole document inside the budget is complete, so it must not invite a
+/// pointless second call.
+#[test]
+fn a_complete_fetch_prints_no_continuation() {
+    let path = write_file("doc.html", DOC);
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/page",
+        ],
+        &[],
+        None,
+    );
+
+    assert!(!stdout(&out).contains("continue with --offset"));
+}
 
 #[test]
 fn max_tokens_bounds_the_whole_output_references_included() {

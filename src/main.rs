@@ -43,6 +43,12 @@ enum Commands {
         /// output stays inside the cap.
         #[arg(long)]
         max_tokens: Option<usize>,
+        /// Byte offset into the extracted text to start from, for reading a
+        /// long page one window at a time. Take it from the previous run's
+        /// `next_offset` (or the "continue with --offset N" footer); successive
+        /// windows tile the document exactly.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
         /// Timeout in seconds for each request. The whole fetch, including
         /// redirects and retries, is bounded at three times this.
         #[arg(long)]
@@ -154,6 +160,18 @@ fn print_fetch(result: &FetchResult) {
     }
     println!("{}", result.content);
 
+    // Without this a budgeted fetch ends mid-sentence with nothing to act on.
+    if let Some(next) = result.next_offset {
+        println!(
+            "\n[showing bytes {}-{} of {} (~{} of ~{} tokens); continue with --offset {}]",
+            result.offset,
+            next,
+            result.total_bytes,
+            result.token_estimate,
+            result.total_token_estimate,
+            next
+        );
+    }
     if let Some(note) = result.status.note() {
         eprintln!("webtools: {note}");
     }
@@ -182,6 +200,7 @@ async fn run() -> anyhow::Result<ExitCode> {
             output,
             json,
             max_tokens,
+            offset,
             timeout,
             ca_cert,
             insecure,
@@ -192,6 +211,7 @@ async fn run() -> anyhow::Result<ExitCode> {
                 url: base.clone(),
                 content_type: ContentType::parse(&output),
                 max_tokens: max_tokens.or(fetch_config.max_tokens),
+                offset,
                 timeout_secs: timeout.or(fetch_config.timeout_secs).unwrap_or(10),
                 tls: tls_config(ca_cert, insecure, &fetch_config.ca_certs),
             };
