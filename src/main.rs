@@ -60,6 +60,11 @@ enum Commands {
         /// part of a long page is worth a budget.
         #[arg(long)]
         outline: bool,
+        /// Print where the page matches this pattern — offset, surrounding text
+        /// and containing section — instead of the body. Case-insensitive
+        /// unless the pattern carries an uppercase letter.
+        #[arg(long, value_name = "PATTERN", conflicts_with = "outline")]
+        grep: Option<String>,
         /// Timeout in seconds for each request. The whole fetch, including
         /// redirects and retries, is bounded at three times this.
         #[arg(long)]
@@ -214,6 +219,7 @@ async fn run() -> anyhow::Result<ExitCode> {
             offset,
             no_cache,
             outline,
+            grep,
             timeout,
             ca_cert,
             insecure,
@@ -226,6 +232,7 @@ async fn run() -> anyhow::Result<ExitCode> {
                 max_tokens: max_tokens.or(fetch_config.max_tokens),
                 offset,
                 outline,
+                grep,
                 timeout_secs: timeout.or(fetch_config.timeout_secs).unwrap_or(10),
                 tls: tls_config(ca_cert, insecure, &fetch_config.ca_certs),
             };

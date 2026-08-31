@@ -144,6 +144,44 @@ document is worse than one that admits it. In JSON the rows are an `outline`
 array of `{level, title, offset, bytes, token_estimate}`, omitted entirely from
 a fetch that did not ask for one.
 
+### Finding a mention on a long page
+
+An outline helps when the page has headings and one of them names what you are
+after. `--grep` covers the rest: where does this page mention a thing, on a
+document whose headings do not say — or that has none.
+
+```
+$ webtools fetch --url https://docs.test/handbook --grep "rate limit"
+offset 1716 in "Token budget" (+2 nearby) — …the rate limit defaults to sixty…
+offset 4102 in "Troubleshooting" — …raise the rate limit before retrying…
+Read a match by fetching it at the offset shown.
+```
+
+Match offsets are paging offsets, like outline offsets, so a hit is read by
+fetching at it. The snippet is a locator rather than the content: it exists to
+let a caller judge which hit is worth reading.
+
+The pattern is a regular expression, matched case-insensitively unless it
+carries an uppercase letter — smart case, as every search tool a caller already
+uses behaves, so case-sensitivity needs no separate flag. Matching is linear in
+the input: this regex engine does not backtrack, so a hostile pattern cannot
+blow up on a hostile page, and the compiled pattern is size-bounded. An
+unusable pattern is reported with the part the engine rejected, rather than
+silently returning the page as though nothing was asked.
+
+Occurrences closer together than a snippet collapse into the first, carrying a
+count (`+2 nearby`): a term repeated through one paragraph is one location, and
+a row per occurrence would spend many tokens restating it. A section boundary
+ends a neighbourhood however close the occurrences sit, because that is the
+document's own claim that this is somewhere else. Hits honour `--max-tokens`
+like an outline, dropping whole hits and saying how many — a search that
+silently reports three of forty reads as absence of evidence.
+
+`--grep` and `--outline` are two views of one page and cannot be combined; the
+CLI refuses rather than silently picking one. In JSON the hits are a `matches`
+array of `{offset, snippet, section?, nearby?}`, absent from a fetch that did
+not ask.
+
 ### Reading a long page
 
 A budget alone turns a long document into a dead end: the output stops, and
@@ -347,7 +385,7 @@ everything and passes fully populated option structs down.
 `webtools mcp` runs a hand-rolled MCP (Model Context Protocol) stdio server,
 speaking line-delimited JSON-RPC 2.0. It negotiates protocol versions
 `2024-11-05` through `2025-06-18` and exposes two tools — `fetch` (`url`,
-`output?`, `max_tokens?`, `offset?`, `outline?`, `timeout?`, `json?`) and `search` (`query`,
+`output?`, `max_tokens?`, `offset?`, `outline?`, `grep?`, `timeout?`, `json?`) and `search` (`query`,
 `max_results?`, `safe_search?`, `timeout?`, `json?`).
 
 ```jsonc

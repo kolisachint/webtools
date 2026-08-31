@@ -1931,6 +1931,7 @@ dependencies = [
  "anyhow",
  "ego-tree",
  "once_cell",
+ "regex",
  "reqwest",
  "scraper",
  "serde",

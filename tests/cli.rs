@@ -962,3 +962,163 @@ fn a_fetch_without_outline_carries_no_outline_field() {
 
     assert!(!stdout(&out).contains("\"outline\""));
 }
+
+// --- grep -------------------------------------------------------------------
+
+#[test]
+fn grep_reports_where_a_page_mentions_something() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/handbook",
+            "--grep",
+            "Configuration",
+        ],
+        &[],
+        None,
+    );
+
+    let text = stdout(&out);
+    assert!(text.contains("offset "), "{text}");
+    assert!(text.contains("at the offset shown"), "{text}");
+    // A search returns locations, not the page: a snippet carries the text
+    // around its own hit, and nothing from the far end of the document.
+    assert!(
+        !text.contains("Sentence 6 of the Troubleshooting"),
+        "{text}"
+    );
+}
+
+/// The point of a search: its offsets are the ones `--offset` reads, so a hit
+/// is followed by fetching it.
+#[test]
+fn a_grep_offset_reads_that_part_of_the_page() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let args = [
+        "fetch",
+        "--from-file",
+        path.to_str().unwrap(),
+        "--url",
+        "https://docs.test/handbook",
+    ];
+
+    let hits = stdout(&run(
+        &[args.as_slice(), &["--grep", "Troubleshooting"]].concat(),
+        &[],
+        None,
+    ));
+    let offset = hits
+        .lines()
+        .find(|line| line.starts_with("offset "))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("no hit: {hits}"));
+
+    let offset = offset.to_string();
+    let read = stdout(&run(
+        &[
+            args.as_slice(),
+            &["--offset", &offset, "--max-tokens", "60"],
+        ]
+        .concat(),
+        &[],
+        None,
+    ));
+
+    assert!(read.contains("Troubleshooting"), "{read}");
+}
+
+#[test]
+fn a_pattern_that_matches_nothing_says_so() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/handbook",
+            "--grep",
+            "websockets",
+        ],
+        &[],
+        None,
+    );
+
+    assert!(stdout(&out).contains("no matches"), "{}", stdout(&out));
+}
+
+/// An unusable pattern is the caller's to fix, so say which part was rejected
+/// rather than returning the page as though nothing was asked.
+#[test]
+fn an_invalid_pattern_is_reported_not_ignored() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/handbook",
+            "--grep",
+            "(unclosed",
+        ],
+        &[],
+        None,
+    );
+
+    let text = stdout(&out);
+    assert!(text.contains("invalid search pattern"), "{text}");
+    assert!(!text.contains("Sentence 1 of the Installation"), "{text}");
+}
+
+/// Two views of one page at once has no meaning, so the CLI refuses rather
+/// than silently picking one.
+#[test]
+fn grep_and_outline_cannot_be_combined() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/handbook",
+            "--outline",
+            "--grep",
+            "Configuration",
+        ],
+        &[],
+        None,
+    );
+
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("cannot be used with"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_fetch_without_grep_carries_no_matches_field() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/handbook",
+            "--json",
+        ],
+        &[],
+        None,
+    );
+
+    assert!(!stdout(&out).contains("\"matches\""));
+}

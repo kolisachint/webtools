@@ -13,6 +13,7 @@ pub use webfetch_core::{charset, compress, http, refs, tls};
 pub mod convert;
 pub mod extract;
 pub mod fetch;
+pub mod grep;
 pub mod guard;
 pub mod limits;
 pub mod media;
@@ -53,54 +54,58 @@ pub fn convert_body(
         }
     }
 
-    let (title, content, references, metadata, output_type, window, sections) = match &media {
-        Media::Html => convert_html_body(body, source_url, content_type_header, options),
-        Media::Json => {
-            // Pretty-print so an agent reads clean JSON; fall back to raw.
-            let pretty = serde_json::from_str::<serde_json::Value>(body)
-                .ok()
-                .and_then(|v| serde_json::to_string_pretty(&v).ok())
-                .unwrap_or_else(|| body.trim().to_string());
-            let (content, window) = budget_plain(&pretty, options);
-            (
-                String::new(),
-                content,
-                Vec::new(),
-                Metadata::default(),
-                ContentType::Structured,
-                window,
-                Vec::new(),
-            )
-        }
-        Media::Text => {
-            let (content, window) = budget_plain(body.trim(), options);
-            (
-                String::new(),
-                content,
-                Vec::new(),
-                Metadata::default(),
-                ContentType::Text,
-                window,
-                Vec::new(),
-            )
-        }
-        Media::Other(ct) => {
-            let content = format!(
-                "[non-text content: {ct}, {} bytes — not rendered]",
-                body.len()
-            );
-            let window = Window::whole(&content);
-            (
-                String::new(),
-                content,
-                Vec::new(),
-                Metadata::default(),
-                options.content_type,
-                window,
-                Vec::new(),
-            )
-        }
-    };
+    let (title, content, references, metadata, output_type, window, sections, matches) =
+        match &media {
+            Media::Html => convert_html_body(body, source_url, content_type_header, options),
+            Media::Json => {
+                // Pretty-print so an agent reads clean JSON; fall back to raw.
+                let pretty = serde_json::from_str::<serde_json::Value>(body)
+                    .ok()
+                    .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                    .unwrap_or_else(|| body.trim().to_string());
+                let (content, window) = budget_plain(&pretty, options);
+                (
+                    String::new(),
+                    content,
+                    Vec::new(),
+                    Metadata::default(),
+                    ContentType::Structured,
+                    window,
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
+            Media::Text => {
+                let (content, window) = budget_plain(body.trim(), options);
+                (
+                    String::new(),
+                    content,
+                    Vec::new(),
+                    Metadata::default(),
+                    ContentType::Text,
+                    window,
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
+            Media::Other(ct) => {
+                let content = format!(
+                    "[non-text content: {ct}, {} bytes — not rendered]",
+                    body.len()
+                );
+                let window = Window::whole(&content);
+                (
+                    String::new(),
+                    content,
+                    Vec::new(),
+                    Metadata::default(),
+                    options.content_type,
+                    window,
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
+        };
 
     FetchResult {
         token_estimate: compress::estimate_tokens(&content),
@@ -110,6 +115,7 @@ pub fn convert_body(
         next_offset: window.next_offset,
         truncated: window.next_offset.is_some(),
         outline: sections,
+        matches,
         status: classify_content(&media, &content, body),
         title,
         final_url: source_url.to_string(),
@@ -182,6 +188,7 @@ fn too_complex_result(source_url: &str, depth: usize, content_type: ContentType)
         next_offset: None,
         truncated: false,
         outline: Vec::new(),
+        matches: Vec::new(),
         status: ContentStatus::TooComplex,
         title: String::new(),
         final_url: source_url.to_string(),
@@ -213,6 +220,7 @@ fn convert_html_body(
     ContentType,
     Window,
     Vec<outline::Section>,
+    Vec<grep::Match>,
 ) {
     let doc = Html::parse_document(body);
     let title = extract::extract_title(&doc);
@@ -227,6 +235,49 @@ fn convert_html_body(
     // The outline is a different view of the same document, not a slice of it:
     // it replaces the body with a map of where the body's sections are. Built
     // against the finished text so its offsets are the ones `offset` reads.
+    // Searching is a third view of the same document, beside reading it in
+    // windows and mapping it by heading: it answers "where does this mention X"
+    // on a page whose headings do not say, or that has none. Its offsets are
+    // the same ones `offset` reads.
+    if let Some(pattern) = &options.grep {
+        let whole = Window {
+            total_token_estimate: compress::estimate_tokens(&body_text),
+            total_bytes: body_text.len(),
+            offset: 0,
+            next_offset: None,
+        };
+        let content = match grep::compile(pattern) {
+            Ok(regex) => {
+                let sections = outline::outline(&doc, &body_text);
+                let matches = grep::grep(&body_text, &regex, &sections);
+                let rendered = grep::render(&matches, pattern, options.max_tokens);
+                return (
+                    title,
+                    rendered,
+                    Vec::new(),
+                    metadata,
+                    options.content_type,
+                    whole,
+                    Vec::new(),
+                    matches,
+                );
+            }
+            // An unusable pattern is the caller's to fix, and saying which part
+            // the engine rejected is the whole of the help we can give.
+            Err(error) => format!("[invalid search pattern /{pattern}/: {error}]"),
+        };
+        return (
+            title,
+            content,
+            Vec::new(),
+            metadata,
+            options.content_type,
+            whole,
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+
     if options.outline {
         let sections = outline::outline(&doc, &body_text);
         let content = outline::render(&sections, options.max_tokens);
@@ -246,6 +297,7 @@ fn convert_html_body(
                 next_offset: None,
             },
             sections,
+            Vec::new(),
         );
     }
 
@@ -296,6 +348,7 @@ fn convert_html_body(
         metadata,
         options.content_type,
         window,
+        Vec::new(),
         Vec::new(),
     )
 }
