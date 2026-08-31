@@ -806,3 +806,159 @@ fn an_unwritable_cache_directory_does_not_fail_the_fetch() {
     assert!(out.status.success(), "fetch failed: {}", stderr(&out));
     assert!(stdout(&out).contains("Paragraph 1"));
 }
+
+// --- outline ----------------------------------------------------------------
+
+/// A document with headings, for the outline tests.
+fn sectioned_doc() -> String {
+    let sections = ["Installation", "Configuration", "Troubleshooting"]
+        .iter()
+        .map(|name| {
+            let body = (1..=6)
+                .map(|i| {
+                    format!("Sentence {i} of the {name} section, with enough words to cost tokens.")
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("<h2>{name}</h2><p>{body}</p>")
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!("<html><head><title>Handbook</title></head><body><article>{sections}</article></body></html>")
+}
+
+#[test]
+fn outline_lists_the_headings_instead_of_the_body() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/handbook",
+            "--outline",
+        ],
+        &[],
+        None,
+    );
+
+    let text = stdout(&out);
+    assert!(text.contains("Installation — offset 0"), "{text}");
+    assert!(text.contains("Configuration — offset"), "{text}");
+    assert!(text.contains("Troubleshooting — offset"), "{text}");
+    // The map, not the territory: the body itself must not come with it.
+    assert!(
+        !text.contains("Sentence 1 of the"),
+        "outline included the body: {text}"
+    );
+}
+
+/// The point of the outline: its offsets are the ones `--offset` reads, so a
+/// caller can map a page cheaply and then fetch only the section it needs.
+#[test]
+fn an_outline_offset_reads_that_section() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let args = [
+        "fetch",
+        "--from-file",
+        path.to_str().unwrap(),
+        "--url",
+        "https://docs.test/handbook",
+    ];
+
+    let outline = stdout(&run(&[args.as_slice(), &["--outline"]].concat(), &[], None));
+    let offset = outline
+        .lines()
+        .find(|line| line.contains("Configuration — offset"))
+        .and_then(|line| line.split("offset ").nth(1))
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("no Configuration row: {outline}"));
+
+    let offset = offset.to_string();
+    let section = stdout(&run(
+        &[
+            args.as_slice(),
+            &["--offset", &offset, "--max-tokens", "60"],
+        ]
+        .concat(),
+        &[],
+        None,
+    ));
+
+    assert!(section.contains("Configuration"), "{section}");
+    assert!(
+        section.contains("Sentence 1 of the Configuration"),
+        "{section}"
+    );
+    assert!(
+        !section.contains("Sentence 1 of the Installation"),
+        "read started before the section: {section}"
+    );
+}
+
+#[test]
+fn a_document_without_headings_says_it_has_no_outline() {
+    let path = write_file(
+        "flat.html",
+        "<html><body><article><p>Prose only.</p></article></body></html>",
+    );
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/flat",
+            "--outline",
+        ],
+        &[],
+        None,
+    );
+
+    assert!(stdout(&out).contains("no outline"), "{}", stdout(&out));
+}
+
+#[test]
+fn outline_entries_travel_in_json_too() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/handbook",
+            "--outline",
+            "--json",
+        ],
+        &[],
+        None,
+    );
+
+    let text = stdout(&out);
+    assert!(text.contains("\"outline\""), "{text}");
+    assert!(text.contains("\"token_estimate\""), "{text}");
+    assert!(text.contains("\"Configuration\""), "{text}");
+}
+
+/// A plain fetch must not start paying for a field it did not ask for.
+#[test]
+fn a_fetch_without_outline_carries_no_outline_field() {
+    let path = write_file("handbook.html", &sectioned_doc());
+    let out = run(
+        &[
+            "fetch",
+            "--from-file",
+            path.to_str().unwrap(),
+            "--url",
+            "https://docs.test/handbook",
+            "--json",
+        ],
+        &[],
+        None,
+    );
+
+    assert!(!stdout(&out).contains("\"outline\""));
+}

@@ -57,6 +57,26 @@ lockstep semantic versioning across all crates.
   never touch a caller's filesystem. `webfetch::convert_page` is the new seam —
   it converts a page a caller already holds exactly as a live fetch would.
 
+- **`fetch --outline` maps a long page instead of reading it.** Paging made a
+  long document readable in sequence, which is the wrong shape when the answer
+  is in one section and the rest is overhead. `--outline` (MCP: `outline`)
+  returns every heading with the offset that reads its section and what that
+  section costs, so a page is mapped for a few dozen tokens and then read one
+  section at a time.
+
+  Outline offsets *are* paging offsets — there is no second addressing scheme to
+  drift out of step. Headings are located in the finished extracted text rather
+  than recorded during conversion, since whitespace compression and
+  duplicate-title stripping run afterwards and would shift an offset captured
+  mid-walk; a heading that cannot be found there is skipped rather than guessed
+  at, because a wrong offset puts a section boundary in the wrong place.
+
+  The outline honours `--max-tokens`, dropping whole rows from the tail rather
+  than cutting one mid-offset, and the count of what it dropped survives even a
+  budget too small to hold it. In JSON it is an `outline` array of
+  `{level, title, offset, bytes, token_estimate}`, absent from any fetch that
+  did not ask for one.
+
 ### Fixed
 
 - **CJK pages came back as mojibake.** Shift_JIS, GBK, GB18030, Big5, EUC-KR,
@@ -72,6 +92,9 @@ lockstep semantic versioning across all crates.
 
 ### Breaking
 
+- `webfetch::types::FetchOptions` gains `outline`, and `FetchResult` gains an
+  `outline` vector of `webfetch::outline::Section`. Exhaustive struct literals
+  need them; `..Default::default()` is unaffected.
 - `webfetch_core::refs::fit_to_budget` returns a `Fitted { content, kept,
   body_consumed }` instead of a `(String, Vec<usize>)`. The consumption is the
   new field: it is where the body was actually cut, and paging cannot be exact

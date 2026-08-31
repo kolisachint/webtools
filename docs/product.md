@@ -105,6 +105,45 @@ roughly 3300.
 Structured output is JSON, so it is never cut mid-string: blocks are dropped
 from the end and the document is re-serialized, and the result always parses.
 
+### Mapping a long page
+
+Paging reads a document in sequence, which is the wrong shape when the answer is
+in one section and the rest is overhead. `--outline` returns the map instead of
+the territory — every heading, with the offset that reads its section and what
+that section costs:
+
+```
+$ webtools fetch --url https://docs.test/handbook --outline
+Handbook
+https://docs.test/handbook
+
+  Installation — offset 0, ~143 tokens
+  Configuration — offset 557, ~145 tokens
+  Search providers — offset 1123, ~152 tokens
+Read a section by fetching it at the offset shown.
+```
+
+Then read only what you came for:
+
+```bash
+webtools fetch --url https://docs.test/handbook --offset 1123 --max-tokens 152
+```
+
+There is no second addressing scheme: outline offsets are paging offsets, so an
+outline row feeds straight back into `--offset` and cannot disagree with it.
+Headings are located in the finished extracted text rather than recorded during
+conversion, because whitespace compression and duplicate-title stripping both
+run afterwards and would shift an offset captured mid-walk. A heading whose text
+cannot be found there is skipped rather than guessed at — a wrong offset puts a
+section boundary in the wrong place, which is worse than an absent row.
+
+The outline honours `--max-tokens` like any other output, dropping whole rows
+from the tail and saying how many it dropped. That count is the one line kept
+even when the budget cannot hold it: an outline that quietly omits half a
+document is worse than one that admits it. In JSON the rows are an `outline`
+array of `{level, title, offset, bytes, token_estimate}`, omitted entirely from
+a fetch that did not ask for one.
+
 ### Reading a long page
 
 A budget alone turns a long document into a dead end: the output stops, and
@@ -308,7 +347,7 @@ everything and passes fully populated option structs down.
 `webtools mcp` runs a hand-rolled MCP (Model Context Protocol) stdio server,
 speaking line-delimited JSON-RPC 2.0. It negotiates protocol versions
 `2024-11-05` through `2025-06-18` and exposes two tools — `fetch` (`url`,
-`output?`, `max_tokens?`, `offset?`, `timeout?`, `json?`) and `search` (`query`,
+`output?`, `max_tokens?`, `offset?`, `outline?`, `timeout?`, `json?`) and `search` (`query`,
 `max_results?`, `safe_search?`, `timeout?`, `json?`).
 
 ```jsonc

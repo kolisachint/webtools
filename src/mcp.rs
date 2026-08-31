@@ -185,6 +185,10 @@ fn tools_list() -> Value {
                             "type": "integer",
                             "description": "Byte offset into the extracted text to start from, for reading a long page one window at a time. Use the next_offset reported by the previous call; windows tile the document exactly."
                         },
+                        "outline": {
+                            "type": "boolean",
+                            "description": "Return the page's headings and the offset that reads each section, instead of the body. Cheap map of a long page: read it first, then fetch the one section you need at its offset."
+                        },
                         "timeout": { "type": "integer", "description": "Request timeout in seconds (default 10)" },
                         "json": {
                             "type": "boolean",
@@ -262,6 +266,10 @@ async fn handle_tool_call(msg: &Value, config: &Config) -> Result<Value> {
                     .and_then(Value::as_u64)
                     .map(|n| n as usize)
                     .unwrap_or(0),
+                outline: args
+                    .get("outline")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 timeout_secs: args
                     .get("timeout")
                     .and_then(Value::as_u64)
