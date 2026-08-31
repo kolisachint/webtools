@@ -57,6 +57,22 @@ pub struct FetchResult {
     /// content-type for anything not rendered.
     pub media: String,
     pub token_estimate: usize,
+    /// Estimated tokens of the whole extracted body, before the token budget
+    /// and any window are applied. What `token_estimate` is a slice of, so a
+    /// caller can tell "this is the page" from "this is the first tenth of it".
+    pub total_token_estimate: usize,
+    /// Byte offset into the extracted body this result starts at.
+    pub offset: usize,
+    /// Size of the whole extracted body in bytes. Offsets are byte positions
+    /// into it, so this is what makes one meaningful as progress.
+    pub total_bytes: usize,
+    /// Where to resume to continue reading, or `None` when the body ended
+    /// inside this window. Exact rather than derived from a token count, so
+    /// successive windows tile the document with no gap and no overlap.
+    pub next_offset: Option<usize>,
+    /// Whether the body continues past this window (`next_offset.is_some()`),
+    /// carried explicitly so JSON consumers do not have to infer it.
+    pub truncated: bool,
     /// Whether content was extracted — see [`ContentStatus`].
     pub status: ContentStatus,
     /// References cited by `content`. When `max_tokens` truncates the body,
@@ -129,6 +145,13 @@ pub struct FetchOptions {
     pub url: String,
     pub content_type: ContentType,
     pub max_tokens: Option<usize>,
+    /// Byte offset into the extracted body to start from, for reading a long
+    /// document one window at a time. Clamped and snapped to a character
+    /// boundary, so a stale or hand-written offset shortens the window rather
+    /// than failing. Ignored by structured output, which is addressed by
+    /// blocks rather than bytes.
+    #[serde(default)]
+    pub offset: usize,
     pub timeout_secs: u64,
     /// TLS trust configuration (OS store is honoured by default; this carries
     /// the explicit `--ca-cert` / `--insecure` overrides).
@@ -142,6 +165,7 @@ impl Default for FetchOptions {
             url: String::new(),
             content_type: ContentType::Text,
             max_tokens: None,
+            offset: 0,
             timeout_secs: 10,
             tls: TlsConfig::default(),
         }

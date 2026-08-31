@@ -120,6 +120,11 @@ pub struct FetchConfig {
     /// it takes no command-line flags.
     #[serde(default)]
     pub ca_certs: Vec<PathBuf>,
+    /// How long a fetched page stays cached, in seconds. `0` disables the
+    /// cache. Defaults to 900; `WEBTOOLS_CACHE_TTL` overrides this, and
+    /// `--no-cache` / `WEBTOOLS_NO_CACHE` turn it off outright.
+    #[serde(default)]
+    pub cache_ttl_secs: Option<u64>,
 }
 
 /// Where the config file would be, if the platform can tell us.

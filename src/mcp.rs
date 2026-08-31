@@ -181,6 +181,10 @@ fn tools_list() -> Value {
                             "type": "integer",
                             "description": "Cap on output size in estimated tokens (default 6000)"
                         },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Byte offset into the extracted text to start from, for reading a long page one window at a time. Use the next_offset reported by the previous call; windows tile the document exactly."
+                        },
                         "timeout": { "type": "integer", "description": "Request timeout in seconds (default 10)" },
                         "json": {
                             "type": "boolean",
@@ -253,6 +257,11 @@ async fn handle_tool_call(msg: &Value, config: &Config) -> Result<Value> {
                         .or(fetch_config.max_tokens)
                         .unwrap_or(DEFAULT_MCP_MAX_TOKENS),
                 ),
+                offset: args
+                    .get("offset")
+                    .and_then(Value::as_u64)
+                    .map(|n| n as usize)
+                    .unwrap_or(0),
                 timeout_secs: args
                     .get("timeout")
                     .and_then(Value::as_u64)
@@ -265,7 +274,21 @@ async fn handle_tool_call(msg: &Value, config: &Config) -> Result<Value> {
                     insecure: false,
                 },
             };
-            let result = webfetch::fetch_and_convert(options).await?;
+            // Same cache as the CLI: an MCP client reading a long page window
+            // by window issues one tool call each, so without it every window
+            // is another download of the same document.
+            let cache = crate::cache::Cache::resolve(false, fetch_config.cache_ttl_secs);
+            let page = match cache.load(&options.url) {
+                Some(page) => page,
+                None => {
+                    let page =
+                        webfetch::fetch_page(&options.url, options.timeout_secs, &options.tls)
+                            .await?;
+                    cache.store(&options.url, &page);
+                    page
+                }
+            };
+            let result = webfetch::convert_page(page, &options);
 
             // Rendered text by default. Returning the whole FetchResult as
             // pretty JSON meant the model paid for escaped newlines and a
@@ -347,6 +370,19 @@ fn render_fetch(result: &webfetch::types::FetchResult) -> String {
         s.push('\n');
     }
     s.push_str(&result.content);
+    // An MCP client sees only this text, so the continuation has to live in it:
+    // otherwise a budgeted page ends mid-sentence with no way to ask for more.
+    if let Some(next) = result.next_offset {
+        s.push_str(&format!(
+            "\n\n[showing bytes {}-{} of {} (~{} of ~{} tokens); continue with offset={}]",
+            result.offset,
+            next,
+            result.total_bytes,
+            result.token_estimate,
+            result.total_token_estimate,
+            next
+        ));
+    }
     s
 }
 

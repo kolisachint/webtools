@@ -105,6 +105,53 @@ roughly 3300.
 Structured output is JSON, so it is never cut mid-string: blocks are dropped
 from the end and the document is re-serialized, and the result always parses.
 
+### Reading a long page
+
+A budget alone turns a long document into a dead end: the output stops, and
+nothing says how much was left or how to reach it. Every fetch therefore reports
+the document it is a slice of, and where to resume:
+
+```
+[showing bytes 0-178 of 3499 (~49 of ~894 tokens); continue with --offset 178]
+```
+
+`--offset` starts the next window there, and windows tile the document exactly —
+every byte covered once, in order — because the resume point is the consumption
+actually returned rather than a byte position re-derived from a token count,
+which drifts. The footer disappears on the window that reaches the end, so
+"no footer" is the signal that there is nothing left to read.
+
+Cuts snap back to the nearest paragraph, line, or word boundary when one is
+within reach, so a window neither ends nor begins mid-word. Text with no break
+in reach (a long unbroken token, CJK without spaces) is cut hard rather than
+withheld, and a budget too small to hold even the elision marker still returns
+one character — a window that consumed nothing would leave a caller asking for
+the same offset forever.
+
+Windows come out of a cache, so reading a document costs one download however
+many windows it takes — and every window sees the same snapshot, which is what
+keeps offsets from an earlier response addressing text that still exists. Pages
+are cached by requested URL under `$XDG_CACHE_HOME/webtools/fetch` (or
+`~/.cache/webtools/fetch`, `~/Library/Caches/...` on macOS), owner-only, for 15
+minutes. `WEBTOOLS_CACHE_DIR` moves it, `webtools.fetch.cache_ttl_secs` or
+`WEBTOOLS_CACHE_TTL` changes the window, and `--no-cache` or
+`WEBTOOLS_NO_CACHE=1` turns it off — at the cost of a download per window. The
+cache is best-effort throughout: one that cannot be read, written, or pruned
+degrades to no cache rather than to a failed fetch.
+
+Raw pages are cached rather than converted output, so one entry serves every
+`--output` format and every offset of the same document; re-extracting per
+window costs far less than re-fetching.
+
+Offsets address the *extracted* text, not the source bytes, so they are stable
+across output formats of the same document. An offset past the end is a stale
+bookmark, not an error: it yields an empty window with no continuation.
+Structured output is addressed by blocks rather than bytes, so it is not
+windowed.
+
+In JSON (`--json`) the same accounting is `offset`, `next_offset`,
+`total_bytes`, `total_token_estimate`, and `truncated`.
+
 ### Knowing when it did not work
 
 An empty answer and a refused one are different facts, and every result says
@@ -224,6 +271,7 @@ ignored too, so a newer config never breaks an older binary.
     "fetch": {
       "timeout_secs": 20,
       "max_tokens": 4000,
+      "cache_ttl_secs": 900,
       "ca_certs": ["/etc/ssl/corp-root.pem"]
     }
   }
@@ -237,6 +285,9 @@ often have no home directory to read.
 
 | Setting | Environment variable |
 |---------|----------------------|
+| Page cache TTL | `WEBTOOLS_CACHE_TTL` (seconds; `0` disables) |
+| Page cache location | `WEBTOOLS_CACHE_DIR` |
+| Disable the page cache | `WEBTOOLS_NO_CACHE` |
 | Search provider | `WEBTOOLS_SEARCH_PROVIDER` |
 | Search fallback | `WEBTOOLS_SEARCH_FALLBACK` (`none` disables) |
 | Brave key | `WEBTOOLS_BRAVE_API_KEY`, `BRAVE_API_KEY` |
@@ -257,7 +308,7 @@ everything and passes fully populated option structs down.
 `webtools mcp` runs a hand-rolled MCP (Model Context Protocol) stdio server,
 speaking line-delimited JSON-RPC 2.0. It negotiates protocol versions
 `2024-11-05` through `2025-06-18` and exposes two tools — `fetch` (`url`,
-`output?`, `max_tokens?`, `timeout?`, `json?`) and `search` (`query`,
+`output?`, `max_tokens?`, `offset?`, `timeout?`, `json?`) and `search` (`query`,
 `max_results?`, `safe_search?`, `timeout?`, `json?`).
 
 ```jsonc
@@ -273,7 +324,10 @@ Three things are worth knowing about the MCP surface specifically:
   carries — a real cost when the destination is a context window.
 - **`fetch` caps output at 6000 tokens** unless `max_tokens` says otherwise. The
   CLI can afford an unbounded page because a terminal scrolls; an MCP result
-  goes straight into a model's context.
+  goes straight into a model's context. A capped result carries its
+  continuation footer in the rendered text, since that is all an MCP client
+  sees: pass the `offset` it names to read on (see
+  [Reading a long page](#reading-a-long-page)).
 - **Requests are served concurrently**, so one slow fetch does not stall the
   others on the connection.
 

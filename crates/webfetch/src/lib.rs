@@ -52,7 +52,7 @@ pub fn convert_body(
         }
     }
 
-    let (title, content, references, metadata, output_type) = match &media {
+    let (title, content, references, metadata, output_type, window) = match &media {
         Media::Html => convert_html_body(body, source_url, content_type_header, options),
         Media::Json => {
             // Pretty-print so an agent reads clean JSON; fall back to raw.
@@ -60,35 +60,51 @@ pub fn convert_body(
                 .ok()
                 .and_then(|v| serde_json::to_string_pretty(&v).ok())
                 .unwrap_or_else(|| body.trim().to_string());
+            let (content, window) = budget_plain(&pretty, options);
             (
                 String::new(),
-                budget_plain(&pretty, options.max_tokens),
+                content,
                 Vec::new(),
                 Metadata::default(),
                 ContentType::Structured,
+                window,
             )
         }
-        Media::Text => (
-            String::new(),
-            budget_plain(body.trim(), options.max_tokens),
-            Vec::new(),
-            Metadata::default(),
-            ContentType::Text,
-        ),
-        Media::Other(ct) => (
-            String::new(),
-            format!(
+        Media::Text => {
+            let (content, window) = budget_plain(body.trim(), options);
+            (
+                String::new(),
+                content,
+                Vec::new(),
+                Metadata::default(),
+                ContentType::Text,
+                window,
+            )
+        }
+        Media::Other(ct) => {
+            let content = format!(
                 "[non-text content: {ct}, {} bytes — not rendered]",
                 body.len()
-            ),
-            Vec::new(),
-            Metadata::default(),
-            options.content_type,
-        ),
+            );
+            let window = Window::whole(&content);
+            (
+                String::new(),
+                content,
+                Vec::new(),
+                Metadata::default(),
+                options.content_type,
+                window,
+            )
+        }
     };
 
     FetchResult {
         token_estimate: compress::estimate_tokens(&content),
+        total_token_estimate: window.total_token_estimate,
+        total_bytes: window.total_bytes,
+        offset: window.offset,
+        next_offset: window.next_offset,
+        truncated: window.next_offset.is_some(),
         status: classify_content(&media, &content, body),
         title,
         final_url: source_url.to_string(),
@@ -101,6 +117,51 @@ pub fn convert_body(
     }
 }
 
+/// How much of the extracted body one result covers.
+///
+/// A budgeted fetch returns a slice of a document, and until now said nothing
+/// about the document: a page cut at 4000 tokens and a page that *is* 4000
+/// tokens were indistinguishable, and there was no way to ask for the rest.
+/// This is that accounting, computed where the cut is actually made.
+struct Window {
+    /// Estimated tokens of the whole extracted body, ignoring budget and offset.
+    total_token_estimate: usize,
+    /// Size of the whole extracted body in bytes — the space offsets index into.
+    total_bytes: usize,
+    /// Byte offset the returned content starts at.
+    offset: usize,
+    /// Byte offset to resume from, or `None` when the body ended here.
+    next_offset: Option<usize>,
+}
+
+impl Window {
+    /// A window covering an entire (short, unbudgeted) document.
+    fn whole(text: &str) -> Self {
+        Self {
+            total_token_estimate: compress::estimate_tokens(text),
+            total_bytes: text.len(),
+            offset: 0,
+            next_offset: None,
+        }
+    }
+
+    /// The window a budgeted pass produced over `full`, having started at
+    /// `offset` and consumed `consumed` bytes from there.
+    fn measured(full: &str, offset: usize, consumed: usize) -> Self {
+        let start = offset.min(full.len());
+        let end = start.saturating_add(consumed).min(full.len());
+        Self {
+            total_token_estimate: compress::estimate_tokens(full),
+            total_bytes: full.len(),
+            offset: start,
+            // Only report a resume point when there is genuinely more to read.
+            // Reporting `end` at the document's end would loop a caller that
+            // follows next_offset until it disappears.
+            next_offset: (end < full.len()).then_some(end),
+        }
+    }
+}
+
 /// The result returned for a document refused by [`limits::too_deeply_nested`].
 fn too_complex_result(source_url: &str, depth: usize, content_type: ContentType) -> FetchResult {
     let content = format!(
@@ -110,6 +171,11 @@ fn too_complex_result(source_url: &str, depth: usize, content_type: ContentType)
     );
     FetchResult {
         token_estimate: compress::estimate_tokens(&content),
+        total_token_estimate: compress::estimate_tokens(&content),
+        total_bytes: content.len(),
+        offset: 0,
+        next_offset: None,
+        truncated: false,
         status: ContentStatus::TooComplex,
         title: String::new(),
         final_url: source_url.to_string(),
@@ -133,7 +199,14 @@ fn convert_html_body(
     source_url: &str,
     content_type_header: Option<&str>,
     options: &FetchOptions,
-) -> (String, String, Vec<UrlReference>, Metadata, ContentType) {
+) -> (
+    String,
+    String,
+    Vec<UrlReference>,
+    Metadata,
+    ContentType,
+    Window,
+) {
     let doc = Html::parse_document(body);
     let title = extract::extract_title(&doc);
     let mut metadata = extract::extract_metadata(&doc);
@@ -144,43 +217,69 @@ fn convert_html_body(
     // title was derived from the page's first <h1>, which also opens the body).
     let body_text = strip_duplicate_title(&title, converted.content);
 
-    let (content, references) = match options.content_type {
+    let (content, references, window) = match options.content_type {
         // Reference-style text: the body cites `[N]`, so the budget rule is
         // "truncate the body, then keep the references it still cites".
         ContentType::Text => {
-            let (content, kept) =
-                refs::fit_to_budget(&body_text, &converted.references, options.max_tokens);
+            let windowed = compress::window_from(&body_text, options.offset);
+            let fitted = refs::fit_to_budget(windowed, &converted.references, options.max_tokens);
             let references = converted
                 .references
                 .into_iter()
-                .filter(|r| kept.contains(&r.index))
+                .filter(|r| fitted.kept.contains(&r.index))
                 .collect();
-            (content, references)
+            let window = Window::measured(&body_text, options.offset, fitted.body_consumed);
+            (fitted.content, references, window)
         }
         // Markdown carries its links inline, so there are no markers to match
         // on: keep the references whose URL survives in the truncated text.
         ContentType::Markdown => {
-            let content = budget_plain(&body_text, options.max_tokens);
+            let (content, window) = budget_plain(&body_text, options);
             let references = converted
                 .references
                 .into_iter()
                 .filter(|r| content.contains(&r.url))
                 .collect();
-            (content, references)
+            (content, references, window)
         }
         // The content is JSON; truncating its text would produce invalid JSON,
-        // so blocks are dropped instead and the document re-serialized.
-        ContentType::Structured => budget_structured(&doc, source_url, options.max_tokens),
+        // so blocks are dropped instead and the document re-serialized. Byte
+        // offsets would cut mid-structure, so this format is not windowed.
+        ContentType::Structured => {
+            let (content, references) = budget_structured(&doc, source_url, options.max_tokens);
+            let window = Window {
+                total_token_estimate: compress::estimate_tokens(&body_text),
+                total_bytes: body_text.len(),
+                offset: 0,
+                next_offset: None,
+            };
+            (content, references, window)
+        }
     };
 
-    (title, content, references, metadata, options.content_type)
+    (
+        title,
+        content,
+        references,
+        metadata,
+        options.content_type,
+        window,
+    )
 }
 
-/// Truncate free-form text (no reference markers to preserve).
-fn budget_plain(text: &str, max_tokens: Option<usize>) -> String {
-    match max_tokens {
-        Some(max) => compress::truncate_to_tokens(text, max),
-        None => text.to_string(),
+/// Window and truncate free-form text (no reference markers to preserve),
+/// reporting the slice of the document it covers.
+fn budget_plain(text: &str, options: &FetchOptions) -> (String, Window) {
+    let windowed = compress::window_from(text, options.offset);
+    match options.max_tokens {
+        Some(max) => {
+            let (content, consumed) = compress::truncate_to_tokens_at(windowed, max);
+            (content, Window::measured(text, options.offset, consumed))
+        }
+        None => (
+            windowed.to_string(),
+            Window::measured(text, options.offset, windowed.len()),
+        ),
     }
 }
 
@@ -325,25 +424,34 @@ fn strip_duplicate_title(title: &str, content: String) -> String {
     content
 }
 
-/// Fetch a URL and convert it according to `options`.
-pub async fn fetch_and_convert(options: FetchOptions) -> anyhow::Result<FetchResult> {
-    let page = fetch::fetch_page(&options.url, options.timeout_secs, &options.tls).await?;
+/// Convert an already-fetched page according to `options`.
+///
+/// Split out of [`fetch_and_convert`] so a caller holding a page — one served
+/// from its own cache, say, which is how a document is paged without refetching
+/// it per window — converts it exactly as a live fetch would.
+pub fn convert_page(page: fetch::FetchedPage, options: &FetchOptions) -> FetchResult {
     let mut result = convert_body(
         &page.body,
         &page.final_url,
         page.content_type.as_deref(),
-        &options,
+        options,
     );
     // `source` is what was asked for, `final_url` is where it came from. They
     // were both set to the post-redirect URL, which discarded the request.
-    result.source = options.url;
+    result.source = options.url.clone();
     result.final_url = page.final_url;
     // The fetch layer knows what it actually decoded with, including the
     // `<meta charset>` fallback, so its verdict wins over re-deriving one here.
     if page.undecodable_charset.is_some() {
         result.metadata.charset = page.undecodable_charset;
     }
-    Ok(result)
+    result
+}
+
+/// Fetch a URL and convert it according to `options`.
+pub async fn fetch_and_convert(options: FetchOptions) -> anyhow::Result<FetchResult> {
+    let page = fetch::fetch_page(&options.url, options.timeout_secs, &options.tls).await?;
+    Ok(convert_page(page, &options))
 }
 
 /// Parse a content-type string ("text" | "markdown" | "structured").

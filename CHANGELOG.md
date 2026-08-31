@@ -11,6 +11,52 @@ lockstep semantic versioning across all crates.
 
 ## [Unreleased]
 
+### Added
+
+- **A long page can be read to the end.** Every fetch now reports the document
+  it is a slice of and where to resume — `offset`, `next_offset`, `total_bytes`,
+  `total_token_estimate` and `truncated` in JSON, and a footer in rendered
+  output:
+
+  ```
+  [showing bytes 0-178 of 3499 (~49 of ~894 tokens); continue with --offset 178]
+  ```
+
+  `fetch --offset N` (MCP: `offset`) starts the next window there. Before this,
+  a budget made a long document a dead end: output stopped at the cap with a
+  bare elision marker, saying neither how much was missing nor how to reach it,
+  and the only route to the rest was re-fetching the whole page at a larger cap.
+
+  Windows tile the document exactly — every byte once, in order — because the
+  resume point is the consumption the truncation actually made rather than a
+  byte position re-derived from a token count, which drifts in both directions.
+  The footer is absent on the window that reaches the end, so its absence is the
+  signal that the read is complete.
+
+  Cuts snap back to the nearest paragraph, line or word boundary within reach,
+  so windows neither end nor begin mid-word; text with no break in reach is
+  still cut hard, and a budget too small even for the elision marker still
+  advances one character rather than returning a window that consumed nothing.
+
+- **Fetched pages are cached, so paging a document downloads it once.** Windows
+  are served from an on-disk cache keyed by requested URL, which also means
+  every window of a read sees the same snapshot — without it, offsets from one
+  response can address text a changed page no longer has.
+
+  Raw pages are cached rather than converted output, so one entry serves every
+  `--output` format and every offset of the same document. Entries live under
+  `$XDG_CACHE_HOME/webtools/fetch` (`~/.cache/...`, or `~/Library/Caches/...` on
+  macOS), owner-only, for 15 minutes; `WEBTOOLS_CACHE_DIR`,
+  `webtools.fetch.cache_ttl_secs` / `WEBTOOLS_CACHE_TTL`, and `--no-cache` /
+  `WEBTOOLS_NO_CACHE` control location, freshness and opt-out. Writes are
+  atomic, expired and excess entries are pruned, and every operation is
+  best-effort: a cache that cannot be read or written degrades to no cache, not
+  to a failed fetch.
+
+  The cache lives in the binary, like config: the published libraries still
+  never touch a caller's filesystem. `webfetch::convert_page` is the new seam —
+  it converts a page a caller already holds exactly as a live fetch would.
+
 ### Fixed
 
 - **CJK pages came back as mojibake.** Shift_JIS, GBK, GB18030, Big5, EUC-KR,
@@ -26,6 +72,16 @@ lockstep semantic versioning across all crates.
 
 ### Breaking
 
+- `webfetch_core::refs::fit_to_budget` returns a `Fitted { content, kept,
+  body_consumed }` instead of a `(String, Vec<usize>)`. The consumption is the
+  new field: it is where the body was actually cut, and paging cannot be exact
+  without it.
+- `webfetch::fetch::FetchedPage` now derives `Serialize`/`Deserialize`, so a
+  caller can persist a fetched page (the CLI cache does).
+- `webfetch::types::FetchOptions` gains `offset`, and `FetchResult` gains
+  `total_token_estimate`, `total_bytes`, `offset`, `next_offset` and
+  `truncated`. Callers building either struct exhaustively need the new fields;
+  `..Default::default()` is unaffected.
 - `webfetch_core::charset::Charset` replaces its `Cp1252` and `Unsupported`
   variants with `Supported(String)` (carrying the encoding's canonical name)
   and `Unknown(String)`. It is now `#[non_exhaustive]`, so the recognized set

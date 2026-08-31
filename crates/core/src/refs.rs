@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::compress::{estimate_tokens, truncate_to_tokens};
+use crate::compress::{estimate_tokens, truncate_to_tokens_at};
 
 /// Anything that can be listed in a reference block: an index and a URL.
 pub trait Referable {
@@ -105,9 +105,22 @@ fn assemble(body: &str, block: &str) -> String {
     }
 }
 
+/// What [`fit_to_budget`] produced: the assembled output, the references it
+/// kept, and how much of the body it got through.
+pub struct Fitted {
+    /// Body plus reference block, inside the cap.
+    pub content: String,
+    /// Indices of the references the surviving body still cites.
+    pub kept: Vec<usize>,
+    /// Bytes of `body` consumed. A caller paging a long document resumes here;
+    /// equal to `body.len()` when the whole body fit.
+    pub body_consumed: usize,
+}
+
 /// Fit `body` plus its reference block inside `max_tokens`.
 ///
-/// Returns the assembled content and the reference indices it kept.
+/// Returns the assembled content, the reference indices it kept, and how far
+/// into the body it got.
 ///
 /// The old rule reserved room for the *whole* reference block and then appended
 /// it regardless of size, so a link-dense page blew straight through the cap
@@ -122,16 +135,21 @@ pub fn fit_to_budget<T: Referable>(
     body: &str,
     references: &[T],
     max_tokens: Option<usize>,
-) -> (String, Vec<usize>) {
+) -> Fitted {
     let all = || references.iter().map(Referable::index).collect::<Vec<_>>();
 
     let Some(max_tokens) = max_tokens else {
-        return (assemble(body, &render_block(references)), all());
+        return Fitted {
+            content: assemble(body, &render_block(references)),
+            kept: all(),
+            body_consumed: body.len(),
+        };
     };
 
+    let full_len = body.len();
     let mut budget = max_tokens;
     for pass in 0..FIT_PASSES {
-        let body = truncate_to_tokens(body, budget);
+        let (body, consumed) = truncate_to_tokens_at(body, budget);
         let cited = cited_indices(&body);
         let kept: Vec<&T> = references
             .iter()
@@ -142,12 +160,16 @@ pub fn fit_to_budget<T: Referable>(
         let total = estimate_tokens(&content);
 
         if total <= max_tokens {
-            return (content, kept.iter().map(|r| r.index()).collect());
+            return Fitted {
+                content,
+                kept: kept.iter().map(|r| r.index()).collect(),
+                body_consumed: consumed.min(full_len),
+            };
         }
         if pass + 1 == FIT_PASSES || budget <= MIN_BODY_TOKENS {
             // The block alone is over budget (very long URLs, very small cap).
             // Drop references from the tail until the whole thing fits.
-            return drop_until_fits(&body, &kept, max_tokens);
+            return drop_until_fits(&body, &kept, max_tokens, consumed.min(full_len));
         }
         // Scale the body budget by how far over we landed, rather than
         // subtracting the overshoot. Subtracting punishes the body for the
@@ -160,7 +182,7 @@ pub fn fit_to_budget<T: Referable>(
         if next >= budget {
             // Not converging (already at the floor): stop shrinking the body
             // and take references off the tail instead.
-            return drop_until_fits(&body, &kept, max_tokens);
+            return drop_until_fits(&body, &kept, max_tokens, consumed.min(full_len));
         }
         budget = next;
     }
@@ -174,16 +196,25 @@ fn drop_until_fits<T: Referable>(
     body: &str,
     kept: &[&T],
     max_tokens: usize,
-) -> (String, Vec<usize>) {
+    body_consumed: usize,
+) -> Fitted {
     let mut kept = kept.to_vec();
     while !kept.is_empty() {
         let content = assemble(body, &render_block(&kept));
         if estimate_tokens(&content) <= max_tokens {
-            return (content, kept.iter().map(|r| r.index()).collect());
+            return Fitted {
+                content,
+                kept: kept.iter().map(|r| r.index()).collect(),
+                body_consumed,
+            };
         }
         kept.pop();
     }
-    (body.to_string(), Vec::new())
+    Fitted {
+        content: body.to_string(),
+        kept: Vec::new(),
+        body_consumed,
+    }
 }
 
 #[cfg(test)]
@@ -214,7 +245,7 @@ mod tests {
 
     #[test]
     fn no_budget_keeps_everything() {
-        let (content, kept) = fit_to_budget(&body_citing(3), &refs(3), None);
+        let Fitted { content, kept, .. } = fit_to_budget(&body_citing(3), &refs(3), None);
         assert_eq!(kept, vec![1, 2, 3]);
         assert!(content.contains("References:"));
         assert!(content.contains("[3] https://example.com"));
@@ -225,7 +256,7 @@ mod tests {
     #[test]
     fn link_dense_page_respects_the_cap() {
         let refs = refs(120);
-        let (content, kept) = fit_to_budget(&body_citing(120), &refs, Some(200));
+        let Fitted { content, kept, .. } = fit_to_budget(&body_citing(120), &refs, Some(200));
         assert!(
             estimate_tokens(&content) <= 200,
             "estimate {} content: {content}",
@@ -237,7 +268,7 @@ mod tests {
     #[test]
     fn every_kept_reference_is_still_cited() {
         let refs = refs(120);
-        let (content, kept) = fit_to_budget(&body_citing(120), &refs, Some(300));
+        let Fitted { content, kept, .. } = fit_to_budget(&body_citing(120), &refs, Some(300));
         let body = content.split("References:").next().unwrap();
         let cited = cited_indices(body);
         for index in &kept {
@@ -250,7 +281,7 @@ mod tests {
     #[test]
     fn a_generous_budget_is_actually_used() {
         let refs = refs(120);
-        let (content, _) = fit_to_budget(&body_citing(120), &refs, Some(1000));
+        let Fitted { content, .. } = fit_to_budget(&body_citing(120), &refs, Some(1000));
         let used = estimate_tokens(&content);
         assert!(used <= 1000, "over budget: {used}");
         assert!(used >= 800, "left {} of 1000 tokens unused", 1000 - used);
@@ -259,7 +290,7 @@ mod tests {
     #[test]
     fn tiny_budget_still_fits() {
         let refs = refs(40);
-        let (content, _) = fit_to_budget(&body_citing(40), &refs, Some(80));
+        let Fitted { content, .. } = fit_to_budget(&body_citing(40), &refs, Some(80));
         assert!(
             estimate_tokens(&content) <= 80,
             "estimate {}",
@@ -271,7 +302,7 @@ mod tests {
     fn generous_budget_is_a_noop() {
         let refs = refs(3);
         let body = body_citing(3);
-        let (content, kept) = fit_to_budget(&body, &refs, Some(100_000));
+        let Fitted { content, kept, .. } = fit_to_budget(&body, &refs, Some(100_000));
         assert_eq!(kept, vec![1, 2, 3]);
         assert_eq!(content, assemble(&body, &render_block(&refs)));
     }
@@ -279,7 +310,7 @@ mod tests {
     #[test]
     fn body_without_references_is_plain_truncation() {
         let empty: [Reference; 0] = [];
-        let (content, kept) = fit_to_budget(&"word ".repeat(500), &empty, Some(50));
+        let Fitted { content, kept, .. } = fit_to_budget(&"word ".repeat(500), &empty, Some(50));
         assert!(kept.is_empty());
         assert!(content.contains("…[truncated]"));
         assert!(estimate_tokens(&content) <= 50);
