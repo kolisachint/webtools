@@ -73,6 +73,11 @@ pub struct FetchResult {
     /// Whether the body continues past this window (`next_offset.is_some()`),
     /// carried explicitly so JSON consumers do not have to infer it.
     pub truncated: bool,
+    /// The document's headings and where each section starts, when an outline
+    /// was asked for. Empty otherwise, and skipped in JSON, so a plain fetch
+    /// pays nothing for a field it did not request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outline: Vec<crate::outline::Section>,
     /// Whether content was extracted — see [`ContentStatus`].
     pub status: ContentStatus,
     /// References cited by `content`. When `max_tokens` truncates the body,
@@ -152,6 +157,11 @@ pub struct FetchOptions {
     /// blocks rather than bytes.
     #[serde(default)]
     pub offset: usize,
+    /// Return the document's outline — its headings, and the offset that reads
+    /// each section — instead of the body. The cheap map for deciding which
+    /// part of a long page is worth spending a budget on.
+    #[serde(default)]
+    pub outline: bool,
     pub timeout_secs: u64,
     /// TLS trust configuration (OS store is honoured by default; this carries
     /// the explicit `--ca-cert` / `--insecure` overrides).
@@ -166,6 +176,7 @@ impl Default for FetchOptions {
             content_type: ContentType::Text,
             max_tokens: None,
             offset: 0,
+            outline: false,
             timeout_secs: 10,
             tls: TlsConfig::default(),
         }

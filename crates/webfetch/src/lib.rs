@@ -16,6 +16,7 @@ pub mod fetch;
 pub mod guard;
 pub mod limits;
 pub mod media;
+pub mod outline;
 pub mod types;
 
 pub use fetch::fetch_page;
@@ -52,7 +53,7 @@ pub fn convert_body(
         }
     }
 
-    let (title, content, references, metadata, output_type, window) = match &media {
+    let (title, content, references, metadata, output_type, window, sections) = match &media {
         Media::Html => convert_html_body(body, source_url, content_type_header, options),
         Media::Json => {
             // Pretty-print so an agent reads clean JSON; fall back to raw.
@@ -68,6 +69,7 @@ pub fn convert_body(
                 Metadata::default(),
                 ContentType::Structured,
                 window,
+                Vec::new(),
             )
         }
         Media::Text => {
@@ -79,6 +81,7 @@ pub fn convert_body(
                 Metadata::default(),
                 ContentType::Text,
                 window,
+                Vec::new(),
             )
         }
         Media::Other(ct) => {
@@ -94,6 +97,7 @@ pub fn convert_body(
                 Metadata::default(),
                 options.content_type,
                 window,
+                Vec::new(),
             )
         }
     };
@@ -105,6 +109,7 @@ pub fn convert_body(
         offset: window.offset,
         next_offset: window.next_offset,
         truncated: window.next_offset.is_some(),
+        outline: sections,
         status: classify_content(&media, &content, body),
         title,
         final_url: source_url.to_string(),
@@ -176,6 +181,7 @@ fn too_complex_result(source_url: &str, depth: usize, content_type: ContentType)
         offset: 0,
         next_offset: None,
         truncated: false,
+        outline: Vec::new(),
         status: ContentStatus::TooComplex,
         title: String::new(),
         final_url: source_url.to_string(),
@@ -206,6 +212,7 @@ fn convert_html_body(
     Metadata,
     ContentType,
     Window,
+    Vec<outline::Section>,
 ) {
     let doc = Html::parse_document(body);
     let title = extract::extract_title(&doc);
@@ -216,6 +223,31 @@ fn convert_html_body(
     // Drop a leading body line that merely repeats the title (common when the
     // title was derived from the page's first <h1>, which also opens the body).
     let body_text = strip_duplicate_title(&title, converted.content);
+
+    // The outline is a different view of the same document, not a slice of it:
+    // it replaces the body with a map of where the body's sections are. Built
+    // against the finished text so its offsets are the ones `offset` reads.
+    if options.outline {
+        let sections = outline::outline(&doc, &body_text);
+        let content = outline::render(&sections, options.max_tokens);
+        return (
+            title,
+            content,
+            Vec::new(),
+            metadata,
+            options.content_type,
+            Window {
+                total_token_estimate: compress::estimate_tokens(&body_text),
+                total_bytes: body_text.len(),
+                offset: 0,
+                // An outline is complete in itself; there is no next window of
+                // it to fetch, and reporting one would send a caller paging
+                // through a map instead of the document.
+                next_offset: None,
+            },
+            sections,
+        );
+    }
 
     let (content, references, window) = match options.content_type {
         // Reference-style text: the body cites `[N]`, so the budget rule is
@@ -264,6 +296,7 @@ fn convert_html_body(
         metadata,
         options.content_type,
         window,
+        Vec::new(),
     )
 }
 
