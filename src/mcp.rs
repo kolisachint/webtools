@@ -274,7 +274,21 @@ async fn handle_tool_call(msg: &Value, config: &Config) -> Result<Value> {
                     insecure: false,
                 },
             };
-            let result = webfetch::fetch_and_convert(options).await?;
+            // Same cache as the CLI: an MCP client reading a long page window
+            // by window issues one tool call each, so without it every window
+            // is another download of the same document.
+            let cache = crate::cache::Cache::resolve(false, fetch_config.cache_ttl_secs);
+            let page = match cache.load(&options.url) {
+                Some(page) => page,
+                None => {
+                    let page =
+                        webfetch::fetch_page(&options.url, options.timeout_secs, &options.tls)
+                            .await?;
+                    cache.store(&options.url, &page);
+                    page
+                }
+            };
+            let result = webfetch::convert_page(page, &options);
 
             // Rendered text by default. Returning the whole FetchResult as
             // pretty JSON meant the model paid for escaped newlines and a

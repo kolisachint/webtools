@@ -1,6 +1,7 @@
 //! Unified CLI: a single `webtools` binary exposing `fetch`, `search`, and an
 //! `mcp` stdio server, the way `cargo`/`rg` ship one binary with many commands.
 
+mod cache;
 mod config;
 mod mcp;
 
@@ -49,6 +50,11 @@ enum Commands {
         /// windows tile the document exactly.
         #[arg(long, default_value_t = 0)]
         offset: usize,
+        /// Skip the page cache: always download, and store nothing. Paging a
+        /// document with this set refetches it once per window, and windows can
+        /// disagree if the page changes mid-read.
+        #[arg(long)]
+        no_cache: bool,
         /// Timeout in seconds for each request. The whole fetch, including
         /// redirects and retries, is bounded at three times this.
         #[arg(long)]
@@ -201,6 +207,7 @@ async fn run() -> anyhow::Result<ExitCode> {
             json,
             max_tokens,
             offset,
+            no_cache,
             timeout,
             ca_cert,
             insecure,
@@ -236,7 +243,24 @@ async fn run() -> anyhow::Result<ExitCode> {
                     if base.is_empty() {
                         anyhow::bail!("provide --url, or --from-file to read a local body");
                     }
-                    webfetch::fetch_and_convert(options).await?
+                    // Cached by URL rather than by window, so paging a document
+                    // costs one download no matter how many windows it takes —
+                    // and every window sees the same snapshot of the page.
+                    let cache = cache::Cache::resolve(no_cache, fetch_config.cache_ttl_secs);
+                    let page = match cache.load(&base) {
+                        Some(page) => page,
+                        None => {
+                            let page = webfetch::fetch_page(
+                                &options.url,
+                                options.timeout_secs,
+                                &options.tls,
+                            )
+                            .await?;
+                            cache.store(&base, &page);
+                            page
+                        }
+                    };
+                    webfetch::convert_page(page, &options)
                 }
             };
 

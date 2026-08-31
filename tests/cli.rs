@@ -678,3 +678,131 @@ fn a_missing_config_is_silent() {
     assert!(out.status.success());
     assert!(!stderr(&out).contains("settings.json"), "{}", stderr(&out));
 }
+
+// --- page cache -------------------------------------------------------------
+
+/// Serve one canned HTTP response per connection on loopback, counting
+/// requests. A plain `std` listener on a thread: the point is to observe how
+/// many times the binary hits the network, not to be an HTTP server.
+fn serve_counting(body: String) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&hits);
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            counter.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    (format!("http://{addr}/doc"), hits)
+}
+
+/// Paging exists to keep a long page out of a context window; refetching it per
+/// window would trade that for a download per window, and let the page change
+/// underneath a read whose offsets came from an earlier snapshot.
+#[test]
+fn paging_a_document_downloads_it_once() {
+    let cache_dir = tempdir().join("cache");
+    let (url, hits) = serve_counting(long_doc());
+    let env = [
+        // The SSRF guard rejects loopback, which is where the test server is.
+        ("WEBFETCH_ALLOW_PRIVATE", "1"),
+        ("WEBTOOLS_CACHE_DIR", cache_dir.to_str().unwrap()),
+    ];
+
+    let first = run(&["fetch", "--url", &url, "--max-tokens", "40"], &env, None);
+    assert!(
+        first.status.success(),
+        "first fetch failed: {}",
+        stderr(&first)
+    );
+    let text = stdout(&first);
+    let next = text
+        .rsplit("continue with --offset ")
+        .next()
+        .and_then(|tail| tail.trim_end().trim_end_matches(']').parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("no continuation footer: {text}"));
+
+    let offset = next.to_string();
+    let second = run(
+        &[
+            "fetch",
+            "--url",
+            &url,
+            "--max-tokens",
+            "40",
+            "--offset",
+            &offset,
+        ],
+        &env,
+        None,
+    );
+    assert!(
+        second.status.success(),
+        "second fetch failed: {}",
+        stderr(&second)
+    );
+    assert!(
+        stdout(&second).contains("showing bytes"),
+        "second window not rendered"
+    );
+
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the second window refetched the page"
+    );
+}
+
+/// The escape hatch has to actually bypass the cache: a stale page must be
+/// re-readable on demand.
+#[test]
+fn no_cache_refetches_every_time() {
+    let cache_dir = tempdir().join("cache-off");
+    let (url, hits) = serve_counting(long_doc());
+    let env = [
+        ("WEBFETCH_ALLOW_PRIVATE", "1"),
+        ("WEBTOOLS_CACHE_DIR", cache_dir.to_str().unwrap()),
+    ];
+
+    for _ in 0..2 {
+        let out = run(&["fetch", "--url", &url, "--no-cache"], &env, None);
+        assert!(out.status.success(), "fetch failed: {}", stderr(&out));
+    }
+
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// A cache that cannot be written must not break fetching.
+#[test]
+fn an_unwritable_cache_directory_does_not_fail_the_fetch() {
+    let (url, _hits) = serve_counting(long_doc());
+    let out = run(
+        &["fetch", "--url", &url],
+        &[
+            ("WEBFETCH_ALLOW_PRIVATE", "1"),
+            // A path under a regular file can never be created.
+            ("WEBTOOLS_CACHE_DIR", "/etc/hosts/nope"),
+        ],
+        None,
+    );
+
+    assert!(out.status.success(), "fetch failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("Paragraph 1"));
+}

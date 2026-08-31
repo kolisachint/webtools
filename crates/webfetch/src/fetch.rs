@@ -1,5 +1,6 @@
 use reqwest::header::{CONTENT_TYPE, LOCATION};
 use reqwest::{redirect::Policy, Client};
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -25,7 +26,11 @@ const TOTAL_BUDGET_MULTIPLIER: u32 = 3;
 
 /// Outcome of an HTTP fetch: the body, the URL we actually landed on after
 /// following redirects, and the response's `Content-Type` (if any).
-#[derive(Debug, Clone)]
+///
+/// Serializable so a caller can hold one between runs — the CLI caches pages
+/// this way, which is what lets a long document be paged without refetching it
+/// per window. The library itself neither reads nor writes any such store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchedPage {
     pub body: String,
     pub final_url: String,

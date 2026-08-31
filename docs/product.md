@@ -128,6 +128,21 @@ withheld, and a budget too small to hold even the elision marker still returns
 one character — a window that consumed nothing would leave a caller asking for
 the same offset forever.
 
+Windows come out of a cache, so reading a document costs one download however
+many windows it takes — and every window sees the same snapshot, which is what
+keeps offsets from an earlier response addressing text that still exists. Pages
+are cached by requested URL under `$XDG_CACHE_HOME/webtools/fetch` (or
+`~/.cache/webtools/fetch`, `~/Library/Caches/...` on macOS), owner-only, for 15
+minutes. `WEBTOOLS_CACHE_DIR` moves it, `webtools.fetch.cache_ttl_secs` or
+`WEBTOOLS_CACHE_TTL` changes the window, and `--no-cache` or
+`WEBTOOLS_NO_CACHE=1` turns it off — at the cost of a download per window. The
+cache is best-effort throughout: one that cannot be read, written, or pruned
+degrades to no cache rather than to a failed fetch.
+
+Raw pages are cached rather than converted output, so one entry serves every
+`--output` format and every offset of the same document; re-extracting per
+window costs far less than re-fetching.
+
 Offsets address the *extracted* text, not the source bytes, so they are stable
 across output formats of the same document. An offset past the end is a stale
 bookmark, not an error: it yields an empty window with no continuation.
@@ -256,6 +271,7 @@ ignored too, so a newer config never breaks an older binary.
     "fetch": {
       "timeout_secs": 20,
       "max_tokens": 4000,
+      "cache_ttl_secs": 900,
       "ca_certs": ["/etc/ssl/corp-root.pem"]
     }
   }
@@ -269,6 +285,9 @@ often have no home directory to read.
 
 | Setting | Environment variable |
 |---------|----------------------|
+| Page cache TTL | `WEBTOOLS_CACHE_TTL` (seconds; `0` disables) |
+| Page cache location | `WEBTOOLS_CACHE_DIR` |
+| Disable the page cache | `WEBTOOLS_NO_CACHE` |
 | Search provider | `WEBTOOLS_SEARCH_PROVIDER` |
 | Search fallback | `WEBTOOLS_SEARCH_FALLBACK` (`none` disables) |
 | Brave key | `WEBTOOLS_BRAVE_API_KEY`, `BRAVE_API_KEY` |

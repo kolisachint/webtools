@@ -424,25 +424,34 @@ fn strip_duplicate_title(title: &str, content: String) -> String {
     content
 }
 
-/// Fetch a URL and convert it according to `options`.
-pub async fn fetch_and_convert(options: FetchOptions) -> anyhow::Result<FetchResult> {
-    let page = fetch::fetch_page(&options.url, options.timeout_secs, &options.tls).await?;
+/// Convert an already-fetched page according to `options`.
+///
+/// Split out of [`fetch_and_convert`] so a caller holding a page — one served
+/// from its own cache, say, which is how a document is paged without refetching
+/// it per window — converts it exactly as a live fetch would.
+pub fn convert_page(page: fetch::FetchedPage, options: &FetchOptions) -> FetchResult {
     let mut result = convert_body(
         &page.body,
         &page.final_url,
         page.content_type.as_deref(),
-        &options,
+        options,
     );
     // `source` is what was asked for, `final_url` is where it came from. They
     // were both set to the post-redirect URL, which discarded the request.
-    result.source = options.url;
+    result.source = options.url.clone();
     result.final_url = page.final_url;
     // The fetch layer knows what it actually decoded with, including the
     // `<meta charset>` fallback, so its verdict wins over re-deriving one here.
     if page.undecodable_charset.is_some() {
         result.metadata.charset = page.undecodable_charset;
     }
-    Ok(result)
+    result
+}
+
+/// Fetch a URL and convert it according to `options`.
+pub async fn fetch_and_convert(options: FetchOptions) -> anyhow::Result<FetchResult> {
+    let page = fetch::fetch_page(&options.url, options.timeout_secs, &options.tls).await?;
+    Ok(convert_page(page, &options))
 }
 
 /// Parse a content-type string ("text" | "markdown" | "structured").
