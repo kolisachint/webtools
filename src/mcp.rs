@@ -189,6 +189,10 @@ fn tools_list() -> Value {
                             "type": "boolean",
                             "description": "Return the page's headings and the offset that reads each section, instead of the body. Cheap map of a long page: read it first, then fetch the one section you need at its offset."
                         },
+                        "grep": {
+                            "type": "string",
+                            "description": "Return where the page matches this regular expression — offset, surrounding text, and the section it falls in — instead of the body. For finding a mention on a page whose headings do not name it, or that has none. Case-insensitive unless the pattern carries an uppercase letter."
+                        },
                         "timeout": { "type": "integer", "description": "Request timeout in seconds (default 10)" },
                         "json": {
                             "type": "boolean",
@@ -270,6 +274,7 @@ async fn handle_tool_call(msg: &Value, config: &Config) -> Result<Value> {
                     .get("outline")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                grep: arg_str(&args, "grep").map(str::to_string),
                 timeout_secs: args
                     .get("timeout")
                     .and_then(Value::as_u64)

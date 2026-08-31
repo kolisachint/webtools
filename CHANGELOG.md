@@ -13,6 +13,32 @@ lockstep semantic versioning across all crates.
 
 ### Added
 
+- **`fetch --grep <pattern>` finds where a page mentions something.** Paging
+  reads a document in order and `--outline` maps it by heading, but neither
+  answers "where does this mention rate limiting" on a page whose headings do
+  not say so, or that has no headings at all. `--grep` (MCP: `grep`) reports
+  each location with its offset, the text around it, and the section it falls
+  in — and those offsets are the ones `--offset` reads, so a hit is followed by
+  fetching it.
+
+  The pattern is a regular expression, case-insensitive unless it carries an
+  uppercase letter: smart case, so case-sensitivity needs no separate flag.
+  Matching is linear in the input — this engine does not backtrack — and the
+  compiled pattern is size-bounded, so neither a hostile pattern nor a hostile
+  page can blow it up. An unusable pattern is reported with the part the engine
+  rejected rather than silently returning the page.
+
+  Occurrences closer together than a snippet collapse into the first with a
+  count of the rest, since a term repeated through one paragraph is one
+  location and a row per occurrence spends many tokens restating it; a section
+  boundary ends a neighbourhood however close the occurrences sit. Hits honour
+  the token budget as an outline does, dropping whole hits and saying how many,
+  because a search that silently reports three of forty reads as absence of
+  evidence.
+
+  `--grep` and `--outline` are two views of one page and cannot be combined. In
+  JSON the hits are a `matches` array, absent from a fetch that did not ask.
+
 - **A long page can be read to the end.** Every fetch now reports the document
   it is a slice of and where to resume — `offset`, `next_offset`, `total_bytes`,
   `total_token_estimate` and `truncated` in JSON, and a footer in rendered
@@ -92,6 +118,9 @@ lockstep semantic versioning across all crates.
 
 ### Breaking
 
+- `webfetch::types::FetchOptions` gains `grep`, and `FetchResult` gains a
+  `matches` vector of `webfetch::grep::Match`. Exhaustive struct literals need
+  them; `..Default::default()` is unaffected.
 - `webfetch::types::FetchOptions` gains `outline`, and `FetchResult` gains an
   `outline` vector of `webfetch::outline::Section`. Exhaustive struct literals
   need them; `..Default::default()` is unaffected.

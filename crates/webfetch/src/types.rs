@@ -78,6 +78,10 @@ pub struct FetchResult {
     /// pays nothing for a field it did not request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outline: Vec<crate::outline::Section>,
+    /// Where the page matched a search pattern, when one was given. Empty
+    /// otherwise, and skipped in JSON, like `outline`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<crate::grep::Match>,
     /// Whether content was extracted — see [`ContentStatus`].
     pub status: ContentStatus,
     /// References cited by `content`. When `max_tokens` truncates the body,
@@ -162,6 +166,11 @@ pub struct FetchOptions {
     /// part of a long page is worth spending a budget on.
     #[serde(default)]
     pub outline: bool,
+    /// Report where the page matches this pattern — offset, surrounding text
+    /// and containing section — instead of the body. For finding a mention on
+    /// a page whose headings do not name it, or that has none.
+    #[serde(default)]
+    pub grep: Option<String>,
     pub timeout_secs: u64,
     /// TLS trust configuration (OS store is honoured by default; this carries
     /// the explicit `--ca-cert` / `--insecure` overrides).
@@ -177,6 +186,7 @@ impl Default for FetchOptions {
             max_tokens: None,
             offset: 0,
             outline: false,
+            grep: None,
             timeout_secs: 10,
             tls: TlsConfig::default(),
         }
