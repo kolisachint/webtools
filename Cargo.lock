@@ -1900,7 +1900,7 @@ dependencies = [
 
 [[package]]
 name = "webtools"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "webtools-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "encoding_rs",
@@ -1926,7 +1926,7 @@ dependencies = [
 
 [[package]]
 name = "webtools-fetch"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ego-tree",
@@ -1942,7 +1942,7 @@ dependencies = [
 
 [[package]]
 name = "webtools-search"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "once_cell",
